@@ -3180,10 +3180,11 @@ NiTriShapeRef FBXWrangler::importShape(FbxNodeAttribute* node, const FBXImportOp
 			}		
 	}
 
-	m->GenerateTangentsDataForAllUVSets();
+	// Disregard tangents, acquire currency
+	//m->GenerateTangentsDataForAllUVSets();
 
-	FbxGeometryElementTangent* tangent = m->GetElementTangent(0);
-	FbxGeometryElementBinormal* bitangent = m->GetElementBinormal(0);
+	FbxGeometryElementTangent* tangent = nullptr;// m->GetElementTangent(0);
+	FbxGeometryElementBinormal* bitangent = nullptr;// m->GetElementBinormal(0);
 
 	bool max_wa = false;
 
@@ -3376,14 +3377,14 @@ NiTriShapeRef FBXWrangler::importShape(FbxNodeAttribute* node, const FBXImportOp
 	data->SetConsistencyFlags(CT_STATIC);
 
 	if (verts.size() != 0 && tris.size() != 0 && uvs.size() != 0) {
-		//Vector3 COM;;
-		//TriGeometryContext g(verts, COM, tris, uvs, normals);
+		Vector3 COM;;
+		TriGeometryContext g(verts, COM, tris, uvs, normals);
 		data->SetHasNormals(1);
 		//recalculate
 		data->SetNormals(normals);
 		//switched to uniform with nifskope
-		data->SetTangents(bitangents);
-		data->SetBitangents(tangents);
+		data->SetTangents(g.tangents);
+		data->SetBitangents(g.bitangents);
 		data->SetBsVectorFlags(static_cast<BSVectorFlags>(data->GetBsVectorFlags() | BSVF_HAS_TANGENTS));
 	}
 
