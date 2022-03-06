@@ -1411,8 +1411,10 @@ class FBXBuilderVisitor : public RecursiveFieldVisitor<FBXBuilderVisitor> {
 			}
 			FbxNode* animatedNode = getBuiltNode(controlledBlockID/*, block.priority*/);
 
-			if (animatedNode == NULL)
-				throw runtime_error("exportKFSequence: Referenced node not found by name:" + controlledBlockID);
+			if (animatedNode == NULL) {
+				Log::Error("exportKFSequence: Referenced node not found by name: %s", controlledBlockID.c_str());
+				continue;
+			}
 			//TODO: use palette here too
 			//NiInterpolatorRef interpolator = block.interpolator;
 			if (block.interpolator != NULL) {
@@ -4874,7 +4876,7 @@ NiCollisionObjectRef FBXWrangler::build_physics(FbxNode* rigid_body, set<pair<Fb
 			zeroMatrix.setZero();
 			body->SetInertiaTensor(TOINERTIAMATRIX(zeroMatrix));
 
-			collision->SetFlags((bhkCOFlags)(collision->GetFlags() | BHKCO_SET_LOCAL));
+			collision->SetFlags((bhkCOFlags)(collision->GetFlags() | BHKCO_SYNC_ON_UPDATE));
 		}
 		body->SetHavokFilter(body_layer.filter);
 		body->SetHavokFilterCopy(body->GetHavokFilter());
@@ -4902,7 +4904,18 @@ NiCollisionObjectRef FBXWrangler::build_physics(FbxNode* rigid_body, set<pair<Fb
 	else
 		throw runtime_error("Unknown rigid body syntax!");
 
-	return_collision->SetTarget(DynamicCast<NiAVObject>(conversion_Map[rigid_body->GetParent()]));
+	auto target = DynamicCast<NiAVObject>(conversion_Map[rigid_body->GetParent()]);
+	auto bhkCollision = DynamicCast<bhkNiCollisionObject>(return_collision);
+	if (NULL != bhkCollision && NULL != bhkCollision->GetBody()) {
+		auto bv_shape = DynamicCast<bhkMoppBvTreeShape>(bhkCollision->GetBody()->GetShape());
+		if (NULL != bv_shape && NULL != bv_shape->GetShape()) {
+			auto c_shape = DynamicCast<bhkCompressedMeshShape>(bv_shape->GetShape());
+			if (c_shape) {
+				c_shape->SetTarget(target);
+			}
+		}
+	}
+	return_collision->SetTarget(target);
 	return return_collision;
 }
 

@@ -1,5 +1,7 @@
 #define NOMINMAX
 
+//1 SHU = 182.88 cm
+
 #include "stdafx.h"
 #include <core/hkxcmd.h>
 #include <core/hkfutils.h>
@@ -12,6 +14,8 @@
 #include <core/bsa.h>
 #include <core/NifFile.h>
 #include <commands/NifScan.h>
+
+#include <spt/SPT.h>
 
 #include <Physics\Dynamics\Constraint\Bilateral\Ragdoll\hkpRagdollConstraintData.h>
 #include <Physics\Dynamics\Constraint\Bilateral\BallAndSocket\hkpBallAndSocketConstraintData.h>
@@ -34,6 +38,14 @@
 #include <DirectXTex.h>
 
 
+static inline hkTransform TOHKTRANSFORM(const Niflib::Matrix33& r, const Niflib::Vector4 t, const float scale = 1.0) {
+	hkTransform out;
+	out(0, 0) = r[0][0]; out(0, 1) = r[0][1]; out(0, 2) = r[0][2]; out(0, 3) = t[0] * scale;
+	out(1, 0) = r[1][0]; out(1, 1) = r[1][1]; out(1, 2) = r[1][2]; out(1, 3) = t[1] * scale;
+	out(2, 0) = r[2][0]; out(2, 1) = r[2][1]; out(2, 2) = r[2][2]; out(2, 3) = t[2] * scale;
+	out(3, 0) = 0.0f;	 out(3, 1) = 0.0f;	  out(3, 2) = 0.0f;	   out(3, 3) = 1.0f;
+	return out;
+}
 
 static bool BeginConversion(string importPath, string exportPath);
 static void InitializeHavok();
@@ -118,6 +130,10 @@ static inline hkVector4 TOVECTOR4(const Niflib::Vector4& v) {
 	return hkVector4(v.x, v.y, v.z, v.w);
 }
 
+static inline hkVector4 TOVECTOR3(const Niflib::Float3& v) {
+	return hkVector4(v[0], v[1], v[2]);
+}
+
 static inline Niflib::Quaternion TOQUAT(const ::hkQuaternion& q, bool inverse = false) {
 	Niflib::Quaternion qt(q.m_vec.getSimdAt(3), q.m_vec.getSimdAt(0), q.m_vec.getSimdAt(1), q.m_vec.getSimdAt(2));
 	return inverse ? qt.Inverse() : qt;
@@ -143,12 +159,45 @@ static inline hkMatrix3 TOMATRIX3(const Niflib::InertiaMatrix& q, bool inverse =
 	hkMatrix3 m3;
 	m3.setCols(TOVECTOR4(q.rows[0]), TOVECTOR4(q.rows[1]), TOVECTOR4(q.rows[2]));
 	if (inverse) m3.invert(0.001);
+	return m3;
+}
+
+static inline hkRotation TOMATRIX3(const Niflib::Matrix33& q, bool inverse = false) {
+	hkRotation m3;
+	m3.setCols(TOVECTOR3(q.rows[0]), TOVECTOR3(q.rows[1]), TOVECTOR3(q.rows[2]));
+	if (inverse) m3.invert(0.001);
+	return m3;
 }
 
 static inline Vector4 HKMATRIXROW(const hkTransform& q, const unsigned int row) {
 	return Vector4(q(row, 0), q(row, 1), q(row, 2), q(row, 3));
 }
 
+static inline Matrix44 TOMATRIX44(const hkTransform& q, const float scale = 1.0f, bool inverse = false) {
+
+	hkVector4 c0 = q.getColumn(0);
+	hkVector4 c1 = q.getColumn(1);
+	hkVector4 c2 = q.getColumn(2);
+	hkVector4 c3 = q.getColumn(3);
+
+	return Matrix44(
+		c0.getSimdAt(0), c1.getSimdAt(0), c2.getSimdAt(0), (float)c3.getSimdAt(0) * scale,
+		c0.getSimdAt(1), c1.getSimdAt(1), c2.getSimdAt(1), (float)c3.getSimdAt(1) * scale,
+		c0.getSimdAt(2), c1.getSimdAt(2), c2.getSimdAt(2), (float)c3.getSimdAt(2) * scale,
+		c0.getSimdAt(3), c1.getSimdAt(3), c2.getSimdAt(3), c3.getSimdAt(3)
+	);
+}
+
+static inline hkTransform TOMATRIX4(const Matrix44& q) {
+
+	hkTransform m;
+	m(0, 0) = q[0][0]; m(0, 1) = q[0][1]; m(0, 2) = q[0][2]; m(0, 3) = q[0][3];
+	m(1, 0) = q[1][0]; m(1, 1) = q[1][1]; m(1, 2) = q[1][2]; m(1, 3) = q[1][3];
+	m(2, 0) = q[2][0]; m(2, 1) = q[2][1]; m(2, 2) = q[2][2]; m(2, 3) = q[2][3];
+	m(3, 0) = q[3][0]; m(3, 1) = q[3][1]; m(3, 2) = q[3][2]; m(3, 3) = q[3][3];
+
+	return m;
+}
 
 SkyrimHavokMaterial convert_havok_material(OblivionHavokMaterial material) {
 	switch (material) {
@@ -711,82 +760,6 @@ class CollisionShapeVisitor : public RecursiveFieldVisitor<CollisionShapeVisitor
 			});
 		}
 
-		void split(const std::array<int, 2>& side, int c, int opposite_c) {
-			//current_stair.insert({ side[0], side[1],  c });
-			//current_stair.insert({ side[1], side[0],  opposite_c });
-			//vector<int> down_adjacent_side = almost_adjacent_side(source, down_adjacent); // a, b
-			//int down_adjiacent_down_vertex_index = min_z_component(down_adjacent); // c
-			//vector<int> down_touching_side = almost_adjacent_side(down_adjacent, down_touching);
-			//int vertex_d = -1; //d
-			//if (find(down_touching_side.begin(), down_touching_side.end(), down_touching.m_a) == down_touching_side.end())
-			//	vertex_d = down_touching.m_a;
-			//if (find(down_touching_side.begin(), down_touching_side.end(), down_touching.m_b) == down_touching_side.end())
-			//	vertex_d = down_touching.m_b;
-			//if (vertex_d == -1)
-			//	vertex_d = down_touching.m_c;
-			//if (vertex_d == -1)
-			//	throw runtime_error("Unable to find the vertex_d in collision breaker!");
-
-			//hkVector4 tdist0; tdist0.setSub4(geometry.m_vertices[down_adjiacent_down_vertex_index], geometry.m_vertices[down_adjacent_side[0]]);
-			//hkVector4 tdist1; tdist1.setSub4(geometry.m_vertices[down_adjiacent_down_vertex_index], geometry.m_vertices[down_adjacent_side[1]]);
-
-			//int vertex_a = tdist0.length3() < tdist1.length3() ? down_adjacent_side[0] : down_adjacent_side[1];
-			//int vertex_b = vertex_a == down_adjacent_side[0] ? down_adjacent_side[1] : down_adjacent_side[0];
-			//int vertex_c = down_adjiacent_down_vertex_index;
-
-			////now calculate the break directions
-			//hkVector4 vector_a = geometry.m_vertices[vertex_a];
-			//hkVector4 vector_b = geometry.m_vertices[vertex_b];
-			//hkVector4 vector_c = geometry.m_vertices[vertex_c];
-			//hkVector4 vector_d = geometry.m_vertices[vertex_d];
-
-			//hkVector4 vector_ac; vector_ac.setSub4(vector_c, vector_a);
-			//hkVector4 vector_bd; vector_bd.setSub4(vector_d, vector_b);
-
-			//// norm / z_component = new_norm / step_size -> new_nomr = (norm/z_component) *step_size
-			//float ac_new_norm = STEP_SIZE / vector_ac.length3().getReal(); // (vector_ac.length3().getReal() / abs(vector_ac(2))) * STEP_SIZE;
-			//float bd_new_norm = STEP_SIZE / vector_bd.length3().getReal(); // (vector_bd.length3().getReal() / abs(vector_bd(2))) * STEP_SIZE;
-
-			//hkVector4 vector_ac_new = hkVector4(vector_ac(0)*ac_new_norm, vector_ac(1)*ac_new_norm, vector_ac(2)*ac_new_norm);
-			//hkVector4 vector_bd_new = hkVector4(vector_bd(0)*bd_new_norm, vector_bd(1)*bd_new_norm, vector_bd(2)*bd_new_norm);
-
-			//hkVector4 vector_a_new; vector_a_new.setAdd4(vector_a, vector_ac_new);
-			//hkVector4 vector_b_new; vector_b_new.setAdd4(vector_b, vector_bd_new);
-
-			//int vertex_a_new = geometry.m_vertices.getSize();
-			//geometry.m_vertices.pushBack(vector_a_new);
-			//int vertex_b_new = geometry.m_vertices.getSize();
-			//geometry.m_vertices.pushBack(vector_b_new);
-
-			////new triangles
-			//hkGeometry::Triangle stairs_down;
-			//stairs_down.m_a = vertex_a;
-			//stairs_down.m_b = vertex_b;
-			//stairs_down.m_c = vertex_a_new;
-			//stairs_down.m_material = 0;
-			//hkGeometry::Triangle stairs_touching;
-			//stairs_touching.m_a = vertex_a_new;
-			//stairs_touching.m_b = vertex_b_new;
-			//stairs_touching.m_c = vertex_b;
-			//stairs_touching.m_material = 0;
-			//hkGeometry::Triangle non_stairs_down;
-			//non_stairs_down.m_a = vertex_a_new;
-			//non_stairs_down.m_b = vertex_b_new;
-			//non_stairs_down.m_c = vertex_c;
-			//non_stairs_down.m_material = 0;
-			//hkGeometry::Triangle non_stairs_touching;
-			//non_stairs_touching.m_a = vertex_c;
-			//non_stairs_touching.m_b = vertex_d;
-			//non_stairs_touching.m_c = vertex_b_new;
-			//non_stairs_touching.m_material = 0;
-
-			//stairs.push_back(non_stairs_down);
-			//stairs.push_back(non_stairs_touching);
-
-			//down_adjacent = stairs_down;
-			//down_touching = stairs_touching;
-		}
-
 		std::array<int, 2> find_max_side(std::array<int, 3> tris) {
 			hkVector4 a = geometry.m_vertices[tris[0]];
 			hkVector4 b = geometry.m_vertices[tris[1]];
@@ -1010,8 +983,8 @@ class CollisionShapeVisitor : public RecursiveFieldVisitor<CollisionShapeVisitor
 		Accessor<CMSPacker> packer(pCompMesh, pData, materials);
 
 		bhkCompressedMeshShapeRef shape = new bhkCompressedMeshShape();
-		shape->SetRadius(pCompMesh->m_radius);
-		shape->SetRadiusCopy(pCompMesh->m_radius);
+		shape->SetRadius(pCompMesh->m_radius * COLLISION_RATIO);
+		shape->SetRadiusCopy(pCompMesh->m_radius * COLLISION_RATIO);
 		shape->SetData(pData);
 		shape->SetTarget(target);
 
@@ -1031,12 +1004,15 @@ class CollisionShapeVisitor : public RecursiveFieldVisitor<CollisionShapeVisitor
 			!isGeometryDegenerate();
 	}
 
+	Vector3 _collision_translation;
+
 public:
 
 	bhkMoppBvTreeShapeRef pMoppShape;
 
-	CollisionShapeVisitor(bhkShapeRef shape, const NifInfo& info, NiAVObject* target) :
+	CollisionShapeVisitor(bhkShapeRef shape, const NifInfo& info, NiAVObject* target, const Vector3& collision_translation) :
 		target(target),
+		_collision_translation(collision_translation),
 		RecursiveFieldVisitor(*this, info) {
 		shape->accept(*this, info);
 		if (pMoppShape == NULL)
@@ -1080,20 +1056,17 @@ public:
 		if (pData != NULL)
 		{
 			vector<Vector3> vertices(pData->GetVertices());
-			vector<TriangleData> in_packed_triangles(pData->GetTriangles());
-			vector<unsigned short> points; points.reserve(in_packed_triangles.size()*3);
+			vector<TriangleData> in_packed_triangles(pData->GetTriangles()); 
+			vector<Triangle> in_triangles;
 			for (TriangleData tpd : in_packed_triangles) {
-				points.push_back(tpd.triangle.v1);
-				points.push_back(tpd.triangle.v2);
-				points.push_back(tpd.triangle.v3);
+				in_triangles.push_back({ tpd.triangle.v1 , tpd.triangle.v2, tpd.triangle.v3 });
 			}
-			vector<Triangle> in_triangles(triangulate(points));
 
 			geometry.m_vertices.setSize(vertices.size());
 			geometry.m_triangles.setSize(in_triangles.size());
 
 			for (int v = 0; v < vertices.size(); v++) {
-				geometry.m_vertices[v] = TOVECTOR4(vertices[v] * COLLISION_RATIO);
+				geometry.m_vertices[v] = TOVECTOR4((vertices[v] - _collision_translation) * COLLISION_RATIO);
 			}
 
 
@@ -1196,7 +1169,7 @@ public:
 
 			vector<Vector3> vertices(shape->GetVertices());
 			for (auto& v : vertices) {
-				geometry.m_vertices.pushBack(TOVECTOR4(v * factor));
+				geometry.m_vertices.pushBack(TOVECTOR4((v - _collision_translation * 6.9) * factor));
 			}
 
 			SkyrimHavokMaterial s_material = material_from_flags(shape->GetVectorFlags());
@@ -1254,7 +1227,7 @@ public:
 
 			vector<Vector3> vertices(shape->GetVertices());
 			for (auto& v : vertices) {
-				geometry.m_vertices.pushBack(TOVECTOR4(v * factor));
+				geometry.m_vertices.pushBack(TOVECTOR4((v - _collision_translation * 6.9) * factor));
 			}
 
 			SkyrimHavokMaterial s_material = material_from_flags(shape->GetVectorFlags());
@@ -1295,22 +1268,73 @@ public:
 	}
 };
 
-bhkShapeRef upgrade_shape(const bhkShapeRef& shape, const NifInfo& info, NiAVObject* target) {
+struct ListShapeSetter {};
+
+template<>
+struct Accessor<ListShapeSetter> {
+	Accessor(bhkListShapeRef list, const vector<unsigned int>& keys)
+	{
+		list->unknownInts = keys;
+	}
+};
+
+bhkShapeRef upgrade_shape(const bhkShapeRef& shape, const NifInfo& info, NiAVObject* target, const Vector3& collision_translation) {
 	if (shape->IsSameType(bhkMoppBvTreeShape::TYPE) ||
 		shape->IsSameType(bhkNiTriStripsShape::TYPE) ||
 		shape->IsSameType(bhkPackedNiTriStripsShape::TYPE))
-		return CollisionShapeVisitor(shape, info, target).pMoppShape;
+		return CollisionShapeVisitor(shape, info, target, collision_translation).pMoppShape;
+	else if (shape->IsSameType(bhkMultiSphereShape::TYPE)) {
+		bhkMultiSphereShapeRef multi = DynamicCast<bhkMultiSphereShape>(shape);
+		bhkListShapeRef new_list = new bhkListShape();
+		auto child_filter_property = new_list->GetChildFilterProperty();
+		child_filter_property.capacityAndFlags = 2147483648;
+		new_list->SetChildFilterProperty(child_filter_property);
+		auto child_shape_property = new_list->GetChildShapeProperty();
+		child_shape_property.capacityAndFlags = 2147483648;
+		new_list->SetChildShapeProperty(child_shape_property);
+		new_list->SetMaterial(multi->GetMaterial());
+		auto shapes = new_list->GetSubShapes();
+		vector<unsigned int> unknown_ints;
+		shapes.resize(multi->GetSpheres().size());
+		unknown_ints.resize(multi->GetSpheres().size(), 0);
+		unknown_ints[0] = multi->GetSpheres().size();
+		size_t i = 0;
+		for (const auto& sphere : multi->GetSpheres()) {
+			bhkSphereShapeRef new_sphere = new bhkSphereShape();
+			new_sphere->SetMaterial(multi->GetMaterial());
+			new_sphere->SetRadius(sphere.radius);
+
+			bhkConvexTransformShapeRef trans = new bhkConvexTransformShape();
+			trans->SetMaterial(multi->GetMaterial());
+			trans->SetRadius(sphere.radius);
+			Matrix44 transform; transform.SetTrans(sphere.center);
+			trans->SetTransform(transform);
+
+			trans->SetShape(StaticCast<bhkShape>(new_sphere));
+
+			shapes[i++] = StaticCast<bhkShape>(trans);
+		}
+		new_list->SetSubShapes(shapes);
+		Accessor<ListShapeSetter>(new_list, unknown_ints);
+		return new_list;
+	}
+	else if (shape->IsSameType(bhkConvexSweepShape::TYPE)) {
+		//I have no idea
+		bhkConvexSweepShapeRef sweep = DynamicCast<bhkConvexSweepShape>(shape);
+		return sweep->GetShape();
+	}
 	else
 		return shape;
 }
 
-vector<bhkShapeRef> upgrade_shapes(const vector<bhkShapeRef>& shapes, const NifInfo& info, NiAVObject* target) {
+vector<bhkShapeRef> upgrade_shapes(const vector<bhkShapeRef>& shapes, const NifInfo& info, NiAVObject* target, const Vector3& collision_translation) {
 	vector<bhkShapeRef> out;
 	for (bhkShapeRef shape : shapes) {
 		if (shape->IsSameType(bhkMoppBvTreeShape::TYPE) ||
 			shape->IsSameType(bhkNiTriStripsShape::TYPE) ||
-			shape->IsSameType(bhkPackedNiTriStripsShape::TYPE))
-			out.push_back(upgrade_shape(shape, info, target));
+			shape->IsSameType(bhkPackedNiTriStripsShape::TYPE) ||
+			shape->IsSameType(bhkMultiSphereShape::TYPE))
+			out.push_back(upgrade_shape(shape, info, target, collision_translation));
 		else
 			out.push_back(shape);
 	}
@@ -1319,47 +1343,68 @@ vector<bhkShapeRef> upgrade_shapes(const vector<bhkShapeRef>& shapes, const NifI
 
 
 template<>
+class Accessor<NiBlendFloatInterpolator> {
+public:
+	float play_speed;
+
+	Accessor(NiBlendFloatInterpolator& obj) {
+		play_speed = obj.unknownByte;
+	}
+};
+
+template<>
 class Accessor<bhkRigidBodyUpgrader> {
 
-	bhkBallAndSocketConstraintRef create_ball_socket(MalleableDescriptor& descriptor) {
+	bhkBallAndSocketConstraintRef create_ball_socket(bhkMalleableConstraintRef& descriptor) {
 		bhkBallAndSocketConstraintRef constraint = new bhkBallAndSocketConstraint();
-		constraint->SetEntities({ descriptor.entityA, descriptor.entityB });
-		constraint->SetBallAndSocket(descriptor.ballAndSocket);
+		//USUALLY NONE
+		//constraint->SetEntities({ descriptor.entityA, descriptor.entityB });
+		constraint->SetBallAndSocket(descriptor->GetMalleable().ballAndSocket);
 		return constraint;
 	}
 
-	bhkHingeConstraintRef create_hinge(MalleableDescriptor& descriptor) {
+	bhkHingeConstraintRef create_hinge(bhkMalleableConstraintRef& descriptor) {
 		bhkHingeConstraintRef constraint = new bhkHingeConstraint();
-		constraint->SetEntities({ descriptor.entityA, descriptor.entityB });
-		constraint->SetHinge(descriptor.hinge);
+		//USUALLY NONE
+		//constraint->SetEntities({ descriptor.entityA, descriptor.entityB });
+		constraint->SetEntities(descriptor->GetEntities());
+		constraint->SetHinge(descriptor->GetMalleable().hinge);
 		return constraint;
 	}
 
-	bhkLimitedHingeConstraintRef create_limited_hinge(MalleableDescriptor& descriptor) {
+	bhkLimitedHingeConstraintRef create_limited_hinge(bhkMalleableConstraintRef& descriptor) {
 		bhkLimitedHingeConstraintRef constraint = new bhkLimitedHingeConstraint();
-		constraint->SetEntities({ descriptor.entityA, descriptor.entityB });
-		constraint->SetLimitedHinge(descriptor.limitedHinge);
+		//USUALLY NONE
+		//constraint->SetEntities({ descriptor.entityA, descriptor.entityB });
+		constraint->SetEntities(descriptor->GetEntities());
+		constraint->SetLimitedHinge(descriptor->GetMalleable().limitedHinge);
 		return constraint;
 	}
 
-	bhkPrismaticConstraintRef create_prismatic(MalleableDescriptor& descriptor) {
+	bhkPrismaticConstraintRef create_prismatic(bhkMalleableConstraintRef& descriptor) {
 		bhkPrismaticConstraintRef constraint = new bhkPrismaticConstraint();
-		constraint->SetEntities({ descriptor.entityA, descriptor.entityB });
-		constraint->SetPrismatic(descriptor.prismatic);
+		//USUALLY NONE
+		//constraint->SetEntities({ descriptor.entityA, descriptor.entityB });
+		constraint->SetEntities(descriptor->GetEntities());
+		constraint->SetPrismatic(descriptor->GetMalleable().prismatic);
 		return constraint;
 	}
 
-	bhkRagdollConstraintRef create_ragdoll(MalleableDescriptor& descriptor) {
+	bhkRagdollConstraintRef create_ragdoll(bhkMalleableConstraintRef& descriptor) {
 		bhkRagdollConstraintRef constraint = new bhkRagdollConstraint();
-		constraint->SetEntities({ descriptor.entityA, descriptor.entityB });
-		constraint->SetRagdoll(descriptor.ragdoll);
+		//USUALLY NONE
+		//constraint->SetEntities({ descriptor.entityA, descriptor.entityB });
+		constraint->SetEntities(descriptor->GetEntities());
+		constraint->SetRagdoll(descriptor->GetMalleable().ragdoll);
 		return constraint;
 	}
 
-	bhkStiffSpringConstraintRef create_stiff_spring(MalleableDescriptor& descriptor) {
+	bhkStiffSpringConstraintRef create_stiff_spring(bhkMalleableConstraintRef& descriptor) {
 		bhkStiffSpringConstraintRef constraint = new bhkStiffSpringConstraint();
-		constraint->SetEntities({ descriptor.entityA, descriptor.entityB });
-		constraint->SetStiffSpring(descriptor.stiffSpring);
+		//USUALLY NONE
+		//constraint->SetEntities({ descriptor.entityA, descriptor.entityB });
+		constraint->SetEntities(descriptor->GetEntities());
+		constraint->SetStiffSpring(descriptor->GetMalleable().stiffSpring);
 		return constraint;
 	}
 
@@ -1368,29 +1413,33 @@ class Accessor<bhkRigidBodyUpgrader> {
 		//Malleables really don't suit skyrim afaik
 		switch (malleable->GetMalleable().type) {
 		case BALLANDSOCKET:
-			return create_ball_socket(malleable->GetMalleable());
+			return create_ball_socket(malleable);
 		case HINGE:
-			return create_hinge(malleable->GetMalleable());
+			return create_hinge(malleable);
 		case LIMITED_HINGE:
-			return create_limited_hinge(malleable->GetMalleable());
+			return create_limited_hinge(malleable);
 		case PRISMATIC:
-			return create_prismatic(malleable->GetMalleable());
+			return create_prismatic(malleable);
 		case RAGDOLL:
-			return create_ragdoll(malleable->GetMalleable());
+			return create_ragdoll(malleable);
 		case STIFFSPRING:
-			return create_stiff_spring(malleable->GetMalleable());
+			return create_stiff_spring(malleable);
 		case MALLEABLE:
 			throw runtime_error("Nested Malleable constraints!");
 		default:
 			throw runtime_error("Unknown malleable inner type!");
 		}
+
 		return NULL;
 	}
 
 	const NifInfo& this_info;
 
+	Vector3 _collision_translation;
+
 public:
-	Accessor(bhkRigidBody& obj, const NifInfo& info, NiAVObject* target) : this_info(info) {
+	Accessor(bhkRigidBody& obj, const NifInfo& info, NiAVObject* target, Vector3 collision_translation) : this_info(info) {
+		_collision_translation = collision_translation;
 		//zero out
 		obj.unknownInt = 0;
 
@@ -1412,9 +1461,13 @@ public:
 		obj.havokFilter.layer_sk = convert_havok_layer(obj.havokFilter.layer_ob);
 		obj.havokFilterCopy = obj.havokFilter;
 
+		obj.translation -= _collision_translation;
+
 		obj.translation.x *= COLLISION_RATIO;
 		obj.translation.y *= COLLISION_RATIO;
 		obj.translation.z *= COLLISION_RATIO;
+
+		obj.center -= obj.center;
 
 		obj.center.x *= COLLISION_RATIO;
 		obj.center.y *= COLLISION_RATIO;
@@ -1425,7 +1478,12 @@ public:
 			if (obj.constraints[i]->IsDerivedType(bhkMalleableConstraint::TYPE)) {
 				obj.constraints[i] = convert_malleable(DynamicCast<bhkMalleableConstraint>(obj.constraints[i]));
 			}
+		}
 
+		//anvildoorucinteriorload01 has Penetration Depth:  3.40282e+38
+		if (obj.penetrationDepth < 0. || obj.penetrationDepth > 1.)
+		{		
+			obj.penetrationDepth = 0.15;
 		}
 
 		//Seems like the old havok settings must be deactivated
@@ -1435,11 +1493,16 @@ public:
 		if (obj.qualityType == MO_QUAL_KEYFRAMED || obj.qualityType == MO_QUAL_KEYFRAMED_REPORT)
 			obj.qualityType = MO_QUAL_FIXED;
 
+		//anvildoorucinteriorload01 has motion system fixed but solver deactivation medium
+		if (obj.motionSystem == MO_SYS_FIXED) {
+			obj.solverDeactivation = SOLVER_DEACTIVATION_OFF;
+		}
+
 		//obsolete collisions
 		if (obj.shape->IsSameType(bhkMoppBvTreeShape::TYPE) ||
 			obj.shape->IsSameType(bhkNiTriStripsShape::TYPE) ||
 			obj.shape->IsSameType(bhkPackedNiTriStripsShape::TYPE)) {
-			obj.shape = upgrade_shape(obj.shape, this_info, target);
+			obj.shape = upgrade_shape(obj.shape, this_info, target, _collision_translation);
 		}
 
 	}
@@ -1509,6 +1572,8 @@ NiTriShapeRef convert_strip(NiTriStripsRef& stripsRef)
 	shapeRef->SetRotation(stripsRef->GetRotation());
 	shapeRef->SetScale(stripsRef->GetScale());
 	shapeRef->SetFlags(524302);
+	if (stripsRef->GetFlags() & 1)
+		shapeRef->SetFlags(524303);
 	shapeRef->SetData(stripsRef->GetData());
 	shapeRef->SetShaderProperty(stripsRef->GetShaderProperty());
 	shapeRef->SetProperties(stripsRef->GetProperties());
@@ -1594,7 +1659,125 @@ public:
 	{
 		dest->unknownByte = source->unknownByte;
 	}
+
+	Accessor(BYTE source, NiBlendFloatInterpolatorRef dest)
+	{
+		dest->unknownByte = source;
+	}
 };
+
+void checkDiffuseAlpha(const string& diffuse_name, const string& export_path) {
+	DirectX::ScratchImage g_image;
+	DirectX::ScratchImage g_timage;
+	DirectX::TexMetadata g_original_info;
+	vector<uint8_t> dds_bin;
+	games.load(Games::TES4, diffuse_name, dds_bin);
+	HRESULT result = DirectX::LoadFromDDSMemory(dds_bin.data(), dds_bin.size(),
+		DirectX::DDS_FLAGS_NONE, &g_original_info, g_image);
+	if (FAILED(result)) {
+		Log::Info("Unable to load DDS Diffuse Map %s", diffuse_name);
+		return;
+	}
+
+	if (DirectX::IsCompressed(g_image.GetMetadata().format))
+	{
+		size_t nimg = g_image.GetImageCount();
+		result = DirectX::Decompress(g_image.GetImages(), nimg, g_original_info, DXGI_FORMAT_UNKNOWN /* picks good default */, g_timage);
+	}
+	else {
+		g_timage = move(g_image);
+	}
+	const auto& g_meta = g_timage.GetMetadata();
+
+	auto img = g_timage.GetImage(0, 0, 0);
+	assert(img);
+	size_t nimg = g_timage.GetImageCount();
+	auto& info = g_timage.GetMetadata();
+
+	string out_name = diffuse_name;
+	out_name.insert(9, "tes4\\");
+	fs::path out_path = fs::path(export_path) / out_name;
+	fs::create_directories(out_path.parent_path());
+
+	DirectX::ScratchImage converted;
+	converted.InitializeFromImage(*img);
+
+
+	HRESULT hr = DirectX::Convert(img, nimg, info, DXGI_FORMAT_R8G8B8A8_UNORM, DirectX::TEX_FILTER_FORCE_NON_WIC | DirectX::TEX_FILTER_SRGB_OUT, DirectX::TEX_THRESHOLD_DEFAULT, converted);
+	int error = GetLastError();
+
+	DirectX::ScratchImage compressed;
+	compressed.InitializeFromImage(*converted.GetImage(0, 0, 0));
+	hr = DirectX::Compress(converted.GetImages(), converted.GetImageCount(), converted.GetMetadata(), DXGI_FORMAT_BC1_UNORM_SRGB, DirectX::TEX_COMPRESS_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, compressed);
+	if (FAILED(hr))
+	{
+		Log::Info("Unable to compress glow map %s", diffuse_name);
+		hr = DirectX::SaveToDDSFile(converted.GetImages(), converted.GetImageCount(), converted.GetMetadata(),
+			DirectX::DDS_FLAGS_NONE,
+			out_path.wstring().c_str());
+		return;
+	}
+	hr = DirectX::SaveToDDSFile(compressed.GetImages(), compressed.GetImageCount(), compressed.GetMetadata(),
+		DirectX::DDS_FLAGS_NONE,
+		out_path.wstring().c_str());
+}
+
+void convertGlowMap(const string& glow_name, const string& export_path) {
+	DirectX::ScratchImage g_image;
+	DirectX::ScratchImage g_timage;
+	DirectX::TexMetadata g_original_info;
+	vector<uint8_t> dds_glow_bin;
+	games.load(Games::TES4, glow_name, dds_glow_bin);
+	HRESULT result = DirectX::LoadFromDDSMemory(dds_glow_bin.data(), dds_glow_bin.size(),
+		DirectX::DDS_FLAGS_NONE, &g_original_info, g_image);
+	if (FAILED(result)) {
+		Log::Info("Unable to load DDS Glow Map %s", glow_name);
+		return;
+	}
+
+	if (DirectX::IsCompressed(g_image.GetMetadata().format))
+	{
+		size_t nimg = g_image.GetImageCount();
+		result = DirectX::Decompress(g_image.GetImages(), nimg, g_original_info, DXGI_FORMAT_UNKNOWN /* picks good default */, g_timage);
+	}
+	else {
+		g_timage = move(g_image);
+	}
+	const auto& g_meta = g_timage.GetMetadata();
+
+	auto img = g_timage.GetImage(0, 0, 0);
+	assert(img);
+	size_t nimg = g_timage.GetImageCount();
+	auto& info = g_timage.GetMetadata();
+
+	string out_name = glow_name;
+	out_name.insert(9, "tes4\\");
+	fs::path out_path = fs::path(export_path) / out_name;
+	fs::create_directories(out_path.parent_path());
+
+	DirectX::ScratchImage converted;
+	converted.InitializeFromImage(*img);
+
+
+	HRESULT hr = DirectX::Convert(img, nimg, info, DXGI_FORMAT_R8G8B8A8_UNORM, DirectX::TEX_FILTER_FORCE_NON_WIC | DirectX::TEX_FILTER_SRGB_OUT, DirectX::TEX_THRESHOLD_DEFAULT, converted);
+	int error = GetLastError();
+
+	DirectX::ScratchImage compressed;
+	compressed.InitializeFromImage(*converted.GetImage(0,0,0));
+	hr = DirectX::Compress(converted.GetImages(), converted.GetImageCount(), converted.GetMetadata(), DXGI_FORMAT_BC1_UNORM_SRGB, DirectX::TEX_COMPRESS_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, compressed);
+	if (FAILED(hr))
+	{
+		Log::Info("Unable to compress glow map %s", glow_name);
+		hr = DirectX::SaveToDDSFile(converted.GetImages(), converted.GetImageCount(), converted.GetMetadata(),
+			DirectX::DDS_FLAGS_NONE,
+			out_path.wstring().c_str());
+		return;
+	}
+	hr = DirectX::SaveToDDSFile(compressed.GetImages(), compressed.GetImageCount(), compressed.GetMetadata(),
+		DirectX::DDS_FLAGS_NONE,
+		out_path.wstring().c_str());
+}
+
 
 class FlipBookConverter
 {
@@ -1603,7 +1786,7 @@ public:
 
 	vector<pair<float, float>> uv_atlas;
 
-	FlipBookConverter(NiFlipControllerRef controller, BSShaderPropertyRef property, bool& hasGlow)
+	FlipBookConverter(NiFlipControllerRef controller, BSShaderPropertyRef property, bool& hasGlow, const string& export_path)
 	{
 
 		if (controller->GetTextureSlot() != BASE_MAP)
@@ -1787,7 +1970,7 @@ public:
 		auto& cinfo = compressed.GetMetadata();
 	
 		path.insert(9, "tes4\\");
-		fs::path out_path = nif_out / path;
+		fs::path out_path = fs::path(export_path) / path;
 		fs::create_directories(out_path.parent_path());
 
 		hr = DirectX::SaveToDDSFile(cimg, cnimg, cinfo,
@@ -1806,7 +1989,7 @@ public:
 			auto& info = g_collage_img.GetMetadata();
 
 			glow_name.insert(9, "tes4\\");
-			fs::path out_path = nif_out / glow_name;
+			fs::path out_path = fs::path(export_path) / glow_name;
 			fs::create_directories(out_path.parent_path());
 
 			DirectX::ScratchImage converted;
@@ -1819,31 +2002,23 @@ public:
 			size_t nconvimg = converted.GetImageCount();
 			auto& convinfo = converted.GetMetadata();
 
-			//if (DirectX::IsCompressed(g_original_info.format) || )
-			//{
-				DirectX::ScratchImage compressed;
-				compressed.InitializeFromImage(*convimg);
+			DirectX::ScratchImage compressed;
+			compressed.InitializeFromImage(*convimg);
 
 
-				hr = DirectX::Compress(convimg, nconvimg, convinfo, convinfo.format, DirectX::TEX_COMPRESS_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, compressed);
+			hr = DirectX::Compress(convimg, nconvimg, convinfo, convinfo.format, DirectX::TEX_COMPRESS_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, compressed);
 
-				auto cimg = compressed.GetImage(0, 0, 0);
-				assert(cimg);
-				size_t cnimg = compressed.GetImageCount();
-				auto& cinfo = compressed.GetMetadata();
+			auto cimg = compressed.GetImage(0, 0, 0);
+			assert(cimg);
+			size_t cnimg = compressed.GetImageCount();
+			auto& cinfo = compressed.GetMetadata();
 
 
 
-				hr = DirectX::SaveToDDSFile(cimg, cnimg, cinfo,
+			hr = DirectX::SaveToDDSFile(cimg, cnimg, cinfo,
 					DirectX::DDS_FLAGS_NONE,
 					out_path.wstring().c_str());
-			//}
 
-			//else {
-			//	hr = DirectX::SaveToDDSFile(convimg, nconvimg, convinfo,
-			//		DirectX::DDS_FLAGS_NONE,
-			//		out_path.wstring().c_str());
-			//}
 		}
 
 		NiFloatInterpControllerRef u_controller;
@@ -1966,7 +2141,7 @@ public:
 map<NiMaterialColorControllerRef, NiPoint3InterpControllerRef> material_controllers_map;
 map<NiAlphaControllerRef, NiFloatInterpControllerRef> material_alpha_controllers_map;
 map<NiFlipControllerRef, NiFloatInterpControllerRef> material_flip_controllers_map;
-map<NiFlipControllerRef, vector<pair<float, float>>> deferred_blends;
+map<NiFlipControllerRef, pair< float, vector<pair<float, float>>>> deferred_blends;
 map<NiTextureTransformControllerRef, NiFloatInterpControllerRef> material_transform_controllers_map;
 
 void convert_tt_rotate(NiTextureTransformControllerRef oldController, NiFloatInterpControllerRef newController, NiInterpolatorRef oldInterpolator, NiFloatInterpControllerRef& new_v_controller, NiInterpolatorRef& newInterpolatorU, NiInterpolatorRef& newInterpolatorV)
@@ -2071,66 +2246,54 @@ class ConverterVisitor : public RecursiveFieldVisitor<ConverterVisitor> {
 	const NifInfo& this_info;
 	set<void*> already_upgraded;
 	const vector<NiObjectRef>& blocks;
+	const fs::path& _export_path;
 
 	map<void*, void*> collision_target_map;
 
 	//vector<NiTriShapeRef> particle_geometry;
 
 	int controller_id = 1;
-	
+	bool _is_clutter = false;
+
+	NiObjectRef find_parent(NiObjectRef& object) {
+		for (auto& block : blocks) {
+			if (block->IsDerivedType(NiNode::TYPE)) {
+				auto& node = DynamicCast<NiNode>(block);
+				for (auto& child : node->GetChildren()) {
+					if (child == object)
+						return node;
+				}
+			}
+		}
+		return NULL;
+	}
+
+	std::vector< NiObjectRef> find_parents(NiObjectRef& object) {
+		std::vector< NiObjectRef> parents;
+		NiObjectRef parent = object;
+		while (parent != NULL) {
+			parent = find_parent(parent);
+			if (parent != NULL)
+				parents.insert(parents.begin(), parent);
+		}
+		return parents;
+	}
+
 
 public:
 
-	set<string> nisequences;
+	vector<string> nisequences;
+	Vector3 _collision_translation;
+	Vector3 _translation;
 
-	//template<typename T>
-	//struct replace<Ref<T>>
-	//{		
-	//	map<Ref<T>, Ref<T>> replace_map;
-	//
-	//	template<typename Ref<T>>
-	//	Ref<T> convert(Ref<T> controller) {
-	//		return controller;
-	//	}
-
-	//	template<>
-	//	NiTimeControllerRef convert(NiMaterialColorControllerRef oldController) {
-	//		BSLightingShaderPropertyColorControllerRef controller = new BSLightingShaderPropertyColorController();
-	//		controller->SetFlags(oldController->GetFlags());
-	//		controller->SetFrequency(oldController->GetFrequency());
-	//		controller->SetPhase(oldController->GetPhase());
-	//		controller->SetStartTime(oldController->GetStartTime());
-	//		controller->SetStopTime(oldController->GetStopTime());
-	//		controller->SetTarget(replace()(oldController->GetTarget());
-	//		controller->SetInterpolator(oldController->GetInterpolator());
-	//		if (oldController->GetTargetColor() == MaterialColor::TC_SELF_ILLUM)
-	//			controller->SetTypeOfControlledColor(LightingShaderControlledColor::LSCC_EMISSIVE_COLOR);
-	//		//constructor sets to specular.
-	//		replace_map[oldController] = controller;
-	//		return controller;			
-	//	}
-
-	//	Ref<T> operator()(Ref<T> niobj) {
-	//		map<NiTimeControllerRef, NiTimeControllerRef>::iterator converted = replace_map.find(niobj);
-	//		if (converted != replace_map.end())
-	//			return converted->second;
-	//		return convert(converted->second);	
-	//	}
-
-	//	T* operator()(T* niptr) {
-	//		if (niptr != NULL) {
-	//			for (map<NiTimeControllerRef, NiTimeControllerRef>::iterator converted = replace_map.begin();
-	//				converted != replace_map.end(); converted++) {
-	//			if (niptr == &*(converter->first))
-	//				return &*converted->second;
-	//		}
-	//		return convert(converted->second);
-	//	}
-
-	//};
-
-	ConverterVisitor(const NifInfo& info, NiObjectRef root, const vector<NiObjectRef>& blocks) :
-		RecursiveFieldVisitor(*this, info), this_info(info), blocks(blocks)
+	ConverterVisitor(const NifInfo& info, NiObjectRef root, const vector<NiObjectRef>& blocks, const Vector3& translation, const Vector3& collision_translation, bool is_clutter, const fs::path& export_path) :
+		RecursiveFieldVisitor(*this, info),
+		this_info(info),
+		blocks(blocks),
+		_translation(translation),
+		_collision_translation(collision_translation),
+		_is_clutter(is_clutter),
+		_export_path(export_path)
 	{
 		root->accept(*this, info);
 		for (NiObjectRef obj : blocks) {
@@ -2157,7 +2320,7 @@ public:
 						if (cc != material_flip_controllers_map.end())
 						{
 							//check if it's a blend defer
-							map<NiFlipControllerRef, vector<pair<float, float>>>::iterator df = deferred_blends.find(DynamicCast<NiFlipController>(blocks[i].controller));
+							auto df = deferred_blends.find(DynamicCast<NiFlipController>(blocks[i].controller));
 							if (df != deferred_blends.end())
 							{
 								NiFloatInterpControllerRef u_controller = cc->second;
@@ -2166,7 +2329,7 @@ public:
 								NiFloatInterpolatorRef f_ref = DynamicCast<NiFloatInterpolator>(blocks[i].interpolator);
 								if (f_ref == NULL)
 									throw runtime_error("NiFlipControllerRef Deferred interpolator without interpolator!");
-								vector<pair<float, float>>& uv_atlas = df->second;
+								vector<pair<float, float>>& uv_atlas = df->second.second;
 								NiFloatInterpolatorRef u_interpolator = new NiFloatInterpolator();
 								NiFloatInterpolatorRef v_interpolator = new NiFloatInterpolator();						
 								
@@ -2184,8 +2347,8 @@ public:
 										Key<float> u_value;
 										Key<float> v_value;
 
-										u_value.time = frame.time;
-										v_value.time = frame.time;
+										u_value.time = frame.time * df->second.first;
+										v_value.time = frame.time * df->second.first;
 
 										int atlas_key = (int)frame.data;
 
@@ -2230,50 +2393,57 @@ public:
 							Log::Info("Not Found!");
 					}
 					if (blocks[i].controller->IsDerivedType(NiTextureTransformController::TYPE)) {
-						map<NiTextureTransformControllerRef, NiFloatInterpControllerRef>::iterator cc = material_transform_controllers_map.find(DynamicCast<NiTextureTransformController>(blocks[i].controller));
-						if (cc != material_transform_controllers_map.end())
-						{
-							if (cc->first->GetOperation() == TT_ROTATE)
+						//if (blocks[i].propertyType == "BSLightingShaderProperty")
+						//{
+							map<NiTextureTransformControllerRef, NiFloatInterpControllerRef>::iterator cc = material_transform_controllers_map.find(DynamicCast<NiTextureTransformController>(blocks[i].controller));
+							if (cc != material_transform_controllers_map.end())
 							{
-								NiTextureTransformControllerRef oldController = cc->first;
-								NiFloatInterpControllerRef controller = cc->second;
-								//convert, otherwise defer;
-								NiFloatInterpControllerRef new_v_controller;
-								NiInterpolatorRef newInterpolatorU;
-								NiInterpolatorRef newInterpolatorV;
+								if (cc->first->GetOperation() == TT_ROTATE)
+								{
+									NiTextureTransformControllerRef oldController = cc->first;
+									NiFloatInterpControllerRef controller = cc->second;
+									//convert, otherwise defer;
+									NiFloatInterpControllerRef new_v_controller;
+									NiInterpolatorRef newInterpolatorU;
+									NiInterpolatorRef newInterpolatorV;
 
-								convert_tt_rotate(oldController,
-									StaticCast<NiFloatInterpController>(controller),
-									blocks[i].interpolator,
-									new_v_controller,
-									newInterpolatorU,
-									newInterpolatorV);
+									convert_tt_rotate(oldController,
+										StaticCast<NiFloatInterpController>(controller),
+										blocks[i].interpolator,
+										new_v_controller,
+										newInterpolatorU,
+										newInterpolatorV);
 
-								NiBlendFloatInterpolatorRef f_ref = DynamicCast<NiBlendFloatInterpolator>(oldController->GetInterpolator());
-								//u_controller->SetInterpolator(StaticCast<NiInterpolator>(controller->GetInterpolator()));
-								NiBlendFloatInterpolatorRef v_ref = new NiBlendFloatInterpolator();
-								v_ref->SetFlags(f_ref->GetFlags());
-								Accessor<BlendUnknownSet>(f_ref, v_ref);
-								v_ref->SetManagedControlled(f_ref->GetManagedControlled());
-								v_ref->SetValue(f_ref->GetValue());
+									NiBlendFloatInterpolatorRef f_ref = DynamicCast<NiBlendFloatInterpolator>(oldController->GetInterpolator());
+									//u_controller->SetInterpolator(StaticCast<NiInterpolator>(controller->GetInterpolator()));
+									NiBlendFloatInterpolatorRef v_ref = new NiBlendFloatInterpolator();
+									v_ref->SetFlags(f_ref->GetFlags());
+									Accessor<BlendUnknownSet>(f_ref, v_ref);
+									v_ref->SetManagedControlled(f_ref->GetManagedControlled());
+									v_ref->SetValue(f_ref->GetValue());
 
-								new_v_controller->SetNextController(oldController->GetNextController());
-								controller->SetNextController(StaticCast<NiTimeController>(new_v_controller));
+									new_v_controller->SetNextController(oldController->GetNextController());
+									controller->SetNextController(StaticCast<NiTimeController>(new_v_controller));
 
-								new_v_controller->SetInterpolator(StaticCast<NiInterpolator>(v_ref));
+									new_v_controller->SetInterpolator(StaticCast<NiInterpolator>(v_ref));
 
-								ControlledBlock additional_v_block = blocks[i];
-								blocks[i].controller = controller;
-								blocks[i].interpolator = newInterpolatorU;
-								blocks[i].controllerId = to_string(controller_id++);
-								additional_v_block.controller = new_v_controller;
-								additional_v_block.interpolator = newInterpolatorV;
-								additional_v_block.controllerId = to_string(controller_id++);
-								blocks.insert(blocks.begin() + i + 1, additional_v_block);
-								
-							} else
-								blocks[i].controller = cc->second;
-						}
+									ControlledBlock additional_v_block = blocks[i];
+									blocks[i].controller = controller;
+									blocks[i].interpolator = newInterpolatorU;
+									blocks[i].controllerId = to_string(controller_id++);
+									additional_v_block.controller = new_v_controller;
+									additional_v_block.interpolator = newInterpolatorV;
+									additional_v_block.controllerId = to_string(controller_id++);
+									blocks.insert(blocks.begin() + i + 1, additional_v_block);
+
+								}
+								else
+									blocks[i].controller = cc->second;
+							}
+						//}
+						//else if (blocks[i].propertyType == "BSEffectShaderProperty") {
+
+						//}
 						else
 							Log::Info("Not Found!");
 					}
@@ -2426,11 +2596,22 @@ public:
 		else if (obj.GetName() == "Bip01 Neck1")
 			obj.SetName(IndexString("NPC Neck [Neck]"));
 
-
-		for (NiAVObjectRef& block : children)
+		auto it = children.begin();
+		while (it != children.end())
 		{
+			NiAVObjectRef& block = *it;
 			if (block == NULL) {
-				children.erase(children.begin() + index);
+				it = children.erase(it);
+				continue;
+			}
+			//daedricshrinehircine01.nif, obsolete
+			if (block->IsSameType(NiDirectionalLight::TYPE)) {
+				it = children.erase(it);
+				continue;
+			}
+			//daedricshrinesanguine01.nif, obsolete
+			if (block->IsSameType(NiAmbientLight::TYPE)) {
+				it = children.erase(it);
 				continue;
 			}
 			if (block->IsSameType(NiTriStrips::TYPE)) {
@@ -2444,11 +2625,18 @@ public:
 			//	NiParticleSystemRef stripsRef = DynamicCast<NiParticleSystem>(block);
 			//	visit_particle(*stripsRef, obj);
 			//}
-
+			it++;
 			index++;
 		}
 		index = 0;
 		//need to do furnitures here, we need to change BSFurnitureMarker to BSFurnitureMarkerNode
+		for (auto it = extras.begin(); it != extras.end(); it) {
+			if (*it == NULL)
+				it = extras.erase(it);
+			else
+				it++;
+		}
+
 		for (NiExtraDataRef extra : extras)
 		{
 			if (extra->IsSameType(BSFurnitureMarker::TYPE)) {
@@ -2461,8 +2649,9 @@ public:
 				for (FurniturePosition pos : positions)
 				{
 					FurniturePosition newpos = FurniturePosition();
-					newpos.offset = pos.offset;
-					newpos.offset.z += 35;
+					newpos.offset = pos.offset; //unudes by havok animation. Z offset is bad in general
+					newpos.offset.z += 35; // For CK
+					newpos.offset.z -= _translation.z; //Again for CK
 
 					if (pos.positionRef1 == 1) {
 						newpos.animationType = AnimationType::SLEEP;
@@ -2510,11 +2699,75 @@ public:
 				extras[index] = DynamicCast<BSFurnitureMarkerNode>(newNode);
 			}
 		}
+		
+		//FLAMES!
+		string flame_name = "FlameNode";
+		if (obj.GetName().find(flame_name) == 0) {
+			int flame_num = 0;
+			string flame_type = obj.GetName().substr(flame_name.size(), obj.GetName().size() - flame_name.size());
+			switch (flame_type.at(0)) {
+			case 'A': //10
+			case 'B': //11
+			case 'C': //12
+			case 'D': //13
+			case 'E': //14
+			case 'F': //15
+			case 'G': //16
+			case 'H': //17
+			case 'I': //18
+			case 'J': //19
+			case 'K': //20
+			case '0':
+				flame_num = 49;
+				break;
+			case '2':
+				flame_num = 46;
+				break;
+			default:
+				flame_num = 49;
+				break;
+			}
+
+			auto parents = find_parents(StaticCast<NiObject>(&obj));
+			parents.push_back(StaticCast<NiObject>(&obj));
+			hkTransform world_transform; world_transform.setIdentity();
+			for (auto& avobj : parents) {
+				if (avobj->IsDerivedType(NiAVObject::TYPE)) {
+					NiAVObjectRef av = DynamicCast<NiAVObject>(avobj);
+					hkTransform local = TOHKTRANSFORM(av->GetRotation(), av->GetTranslation());
+					world_transform.setMulEq(local);
+				}
+			}
+			BSValueNodeRef flame_node = new BSValueNode();
+			std::string suffix = obj.GetName().substr(std::string("FlameNode").size(), obj.GetName().size() - std::string("FlameNode").size());
+			flame_node->SetName(string("AddOnNode")+to_string(flame_num) + suffix);
+			flame_node->SetFlags(524302);
+			flame_node->SetTranslation({ 0., 0.,0. });
+			if (flame_num == 46)
+				flame_node->SetTranslation({ 0., 8.,0. });
+			hkRotation rot = world_transform.getRotation();
+			rot.transpose();
+			flame_node->SetRotation(
+				Matrix33(
+					rot(0, 0), rot(0, 1), rot(0, 2),
+					rot(1, 0), rot(1, 1), rot(1, 2),
+					rot(2, 0), rot(2, 1), rot(2, 2)
+				)
+			);
+			flame_node->SetScale(1.);
+			flame_node->SetValue(flame_num);
+			flame_node->SetValueNodeFlags((BSValueNodeFlags)0);
+			children.push_back(StaticCast<NiAVObject>(flame_node));
+		}
+		
 		//TODO
 		//properties are deprecated
 		obj.SetProperties(vector<NiPropertyRef>{});
 		obj.SetChildren(children);
 		obj.SetExtraDataList(extras);
+		//Not supported anymore. seems like dead exporter stuff like NiDirectionaLight
+		//Crashes SE
+		obj.SetEffects({});
 	}
 
 	template<>
@@ -2525,6 +2778,10 @@ public:
 		for (NiAVObjectRef& block : children)
 		{
 			if (block == NULL) {
+				children.erase(children.begin() + index);
+				continue;
+			}
+			if (block->IsSameType(NiDirectionalLight::TYPE)) {
 				children.erase(children.begin() + index);
 				continue;
 			}
@@ -2605,6 +2862,9 @@ public:
 			obj.SetBsVectorFlags(static_cast<BSVectorFlags>(obj.GetBsVectorFlags() | BSVF_HAS_TANGENTS));
 		}
 
+		//grovestatue01.nif v10.0.0.2
+		obj.SetHasTriangles(faces.size() > 0);
+
 		//TODO: shared normals no more supported
 		obj.SetMatchGroups(vector<MatchGroup>{});
 	}
@@ -2616,6 +2876,9 @@ public:
 		property.SetEmissiveMultiple(material->GetEmissiveMult());
 		property.SetGlossiness(material->GetGlossiness());
 		property.SetAlpha(material->GetAlpha());
+
+
+		//TODO: check alpha property!
 
 		Color3 em = material->GetEmissiveColor();
 		if (em.r > 0.0 || em.g > 0.0 || em.b > 0)
@@ -2634,12 +2897,42 @@ public:
 			hasOwnEmit = true;
 	}
 
+	bool findTextureFromBSA(const string& name)
+	{
+		Games& games = Games::Instance();
+		for (const auto& bsa_file : games.bsa_files()) {
+			if (bsa_file.find(name)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	static string replace_all(const string& source, const string& pattern, const string& new_pattern)
+	{
+		string result = source;
+		string lower_source = source;
+		std::transform(lower_source.begin(), lower_source.end(), lower_source.begin(), ::tolower);
+		string lower_pattern = pattern;
+		std::transform(lower_pattern.begin(), lower_pattern.end(), lower_pattern.begin(), ::tolower);
+		string::size_type n = 0;
+		while ((n = lower_source.find(lower_pattern, n)) != string::npos)
+		{
+			lower_source.replace(n, pattern.size(), new_pattern);
+			result.replace(n, pattern.size(), new_pattern);
+			n += new_pattern.size();
+		}
+		return result;
+	}
+
 	template<>
 	inline void visit_object(NiTriShape& obj) {
 		bool hasSpecular = false;
 		bool hasZbuffer = false;
 		bool hasGlow = false;
 		bool hasOwnEmit = false;
+		bool hasEnv = false;
+		bool hasRefract = false;
 		BSShaderPropertyRef lightingProperty; // = new BSLightingShaderProperty();
 		BSShaderTextureSetRef textureSet = new BSShaderTextureSet();
 		NiMaterialPropertyRef material = new NiMaterialProperty();
@@ -2680,26 +2973,40 @@ public:
 			lightingProperty = temp;
 		}
 
+
+		bool niflip = false;
 		for (NiPropertyRef property : properties)
 		{
 			if (property->IsSameType(NiMaterialProperty::TYPE)) {
 				material = DynamicCast<NiMaterialProperty>(property);
-				//lightingProperty->SetShaderType(BSShaderType::SHADER_DEFAULT);
-				//lightingProperty->SetEmissiveColor(material->GetEmissiveColor());
-				//lightingProperty->SetSpecularColor(material->GetSpecularColor());
-				//lightingProperty->SetEmissiveMultiple(1);
-				//lightingProperty->SetGlossiness(material->GetGlossiness());
-				//lightingProperty->SetAlpha(material->GetAlpha());
+
 				if (lightingProperty->IsSameType(BSLightingShaderProperty::TYPE))
 					setMaterialProperties(*DynamicCast<BSLightingShaderProperty>(lightingProperty), material, hasOwnEmit);
 				else
 					setMaterialProperties(*DynamicCast<BSEffectShaderProperty>(lightingProperty), material, hasOwnEmit);
 
+				if (material->GetName().find("EnvMap") != string::npos ||
+					material->GetGlossiness() > 10.0) {
+					hasEnv = true;
+				}
+
+
 				//TODO:: Create some kind of recursive method to modify GetNextControllers.
 				if (material->GetController() != NULL) {
 					if (material->GetController()->IsSameType(NiMaterialColorController::TYPE)) {
 						NiMaterialColorControllerRef oldController = DynamicCast<NiMaterialColorController>(material->GetController());
-						BSLightingShaderPropertyColorControllerRef controller = new BSLightingShaderPropertyColorController();
+						NiPoint3InterpControllerRef controller;
+						if (lightingProperty->IsSameType(BSLightingShaderProperty::TYPE)) {
+							BSLightingShaderPropertyColorControllerRef typed_controller = new BSLightingShaderPropertyColorController();
+							if (oldController->GetTargetColor() == MaterialColor::TC_SELF_ILLUM)
+								typed_controller->SetTypeOfControlledColor(LightingShaderControlledColor::LSCC_EMISSIVE_COLOR);
+							controller = typed_controller;
+						}
+						else {
+							BSEffectShaderPropertyColorControllerRef typed_controller = new BSEffectShaderPropertyColorController();
+							if (oldController->GetTargetColor() == MaterialColor::TC_SELF_ILLUM)
+								typed_controller->SetTypeOfControlledColor(EffectShaderControlledColor::ECSC_EMISSIVE_COLOR);
+						}
 						controller->SetFlags(oldController->GetFlags());
 						controller->SetFrequency(oldController->GetFrequency());
 						controller->SetPhase(oldController->GetPhase());
@@ -2707,10 +3014,41 @@ public:
 						controller->SetStopTime(oldController->GetStopTime());
 						controller->SetTarget(lightingProperty);
 						controller->SetInterpolator(oldController->GetInterpolator());
-						if (oldController->GetTargetColor() == MaterialColor::TC_SELF_ILLUM)
-							controller->SetTypeOfControlledColor(LightingShaderControlledColor::LSCC_EMISSIVE_COLOR);
-						//constructor sets to specular.
 
+						//constructor sets to specular.
+						//Seems this also likes a niblendfloat
+						if (lightingProperty->IsSameType(BSLightingShaderProperty::TYPE))
+						{
+							//We're gonna leave this here and rewire it later
+							NiFloatInterpolatorRef interpolator = new NiFloatInterpolator();
+							NiFloatDataRef data = new NiFloatData();
+							KeyGroup<float > tkeys;
+							Key<float> start;
+							start.time = oldController->GetStartTime();
+							start.data = 1.;
+							Key<float> stop;
+							stop.time = oldController->GetStopTime();
+							start.data = 1.;
+							tkeys.keys.push_back(start);
+							tkeys.keys.push_back(stop);
+							interpolator->SetData(data);
+
+
+							BSLightingShaderPropertyFloatControllerRef additional_controller = new BSLightingShaderPropertyFloatController();
+							additional_controller->SetFlags(oldController->GetFlags());
+							additional_controller->SetFrequency(oldController->GetFrequency());
+							additional_controller->SetPhase(oldController->GetPhase());
+							additional_controller->SetStartTime(oldController->GetStartTime());
+							additional_controller->SetStopTime(oldController->GetStopTime());
+							additional_controller->SetTarget(lightingProperty);
+							additional_controller->SetInterpolator(StaticCast<NiInterpolator>(interpolator));
+							additional_controller->SetTypeOfControlledVariable(LightingShaderControlledVariable::LSCV_EMISSIVE_MULTIPLE);
+
+
+
+
+							controller->SetNextController(StaticCast<NiTimeController>(additional_controller));
+						}
 						lightingProperty->SetController(DynamicCast<NiTimeController>(controller));
 						material_controllers_map[oldController] = controller;
 					}
@@ -2732,6 +3070,14 @@ public:
 				}
 			}
 
+			/*NifSkope Texture "Slots"
+				Slot 1: Diffuse Texture(*.dds)
+				Slot 2 : Normal Map(*_n.dds)
+				Slot 3 : Glow Map(*_g.dds)
+				Slot 4 : parallax ()
+				Slot 5 : Effects map (*_e.dds)
+				Slot 6 : Environment Mask Map (*_m.dds)*/
+
 			if (property->IsSameType(NiTexturingProperty::TYPE)) {
 				texturing = DynamicCast<NiTexturingProperty>(property);
 				string textureName;
@@ -2743,10 +3089,20 @@ public:
 					if (textureName == "Grey.dds" || textureName == "grey.dds")
 						textureName = "textures\\characters\\hair\\Grey.dds";
 
+					if (textureName.find("Refract.dds") != std::string::npos)
+						hasRefract = true;
+
+					string basename = textureName;
+					basename.erase(basename.end() - 4, basename.end());
+					if (basename.rfind('_') != string::npos)
+						basename.erase(basename.begin() + basename.rfind('_'), basename.end());
+
+					string override_base = basename;
+					override_base.insert(9, "tes4\\");
+
 					textureName.insert(9, "tes4\\");
-					string textureNormal = textureName;
-					textureNormal.erase(textureNormal.end() - 4, textureNormal.end());
-					textureNormal += "_n.dds";
+					string textureOverrideNormal = override_base + "_n.dds";
+					string textureNormal = basename + "_n.dds";
 
 					//setup textureSet (TODO)
 					std::vector<std::string> textures(9);
@@ -2755,8 +3111,11 @@ public:
 					Games& games = Games::Instance();
 					const Games::GamesPathMapT& installations = games.getGames();
 
-					if (games.isGameInstalled(Games::TES5) && fs::exists(games.data(Games::TES5) / textureNormal))
-						textures[1] = textureNormal;
+					if ( (games.isGameInstalled(Games::TES5) && fs::exists(games.data(Games::TES5) / textureOverrideNormal))
+						|| (games.isGameInstalled(Games::TES5SE) && fs::exists(games.data(Games::TES5SE) / textureOverrideNormal))
+						|| (games.isGameInstalled(Games::TES4) && fs::exists(games.data(Games::TES4) / textureNormal))
+						|| findTextureFromBSA(textureNormal))
+						textures[1] = textureOverrideNormal;
 					else
 						textures[1] = "textures\\default_n.dds";
 
@@ -2764,32 +3123,51 @@ public:
 					textureSet->SetTextures(textures);
 				}
 
+				if (textureSet->GetTextures().size() > 0)
+				{
+					vector<string>& textures = textureSet->GetTextures();
+					string texture_glow = textures[0];
+					texture_glow.erase(texture_glow.end() - 4, texture_glow.end());
+					if (texture_glow.rfind('_') != string::npos)
+						texture_glow.erase(texture_glow.begin() + texture_glow.rfind('_'), texture_glow.end());
+					texture_glow += "_g.dds";
+
+					string texture_glow_bsa = replace_all(texture_glow, "tes4\\", "");
+
+					if ((games.isGameInstalled(Games::TES5) && fs::exists(games.data(Games::TES5) / texture_glow))
+						|| (games.isGameInstalled(Games::TES5SE) && fs::exists(games.data(Games::TES5SE) / texture_glow))
+						|| (games.isGameInstalled(Games::TES4) && fs::exists(games.data(Games::TES4) / texture_glow_bsa))
+						|| findTextureFromBSA(texture_glow_bsa))
+					{
+						hasGlow = true;
+						if (games.isGameInstalled(Games::TES4) && fs::exists(games.data(Games::TES4) / texture_glow_bsa) ||
+							findTextureFromBSA(texture_glow_bsa))
+							convertGlowMap(texture_glow_bsa, _export_path.string());
+					}
+				}
+
+
 				if (texturing->GetController() == NULL)
 					continue;
 
 				if (texturing->GetController()->IsSameType(NiFlipController::TYPE)) {
-
+					niflip = true;
 					//FlipController packs up sprites, but skyrim doesn't support that.
 					//instead, we have to load all the images into one and transform this into an UV animation.
 					NiFlipControllerRef oldController = DynamicCast<NiFlipController>(texturing->GetController());
-					FlipBookConverter conv(oldController, lightingProperty, hasGlow);
+					float speed = 1.;
+					auto blend = DynamicCast<NiBlendFloatInterpolator>(oldController->GetInterpolator());
+					if (NULL != blend && blend->GetFlags() == 3)
+					{
+						speed = (float)Accessor<NiBlendFloatInterpolator>(*blend).play_speed;
+					}
+					FlipBookConverter conv(oldController, lightingProperty, hasGlow, _export_path.string());
 
-					/*BSLightingShaderPropertyFloatControllerRef controller = new BSLightingShaderPropertyFloatController();
-					controller->SetFlags(oldController->GetFlags());
-					controller->SetFrequency(oldController->GetFrequency());
-					controller->SetPhase(oldController->GetPhase());
-					controller->SetStartTime(oldController->GetStartTime());
-					controller->SetStopTime(oldController->GetStopTime());
-					controller->SetTarget(lightingProperty);
-					controller->SetInterpolator(oldController->GetInterpolator());
-					controller->SetTypeOfControlledVariable(LightingShaderControlledVariable::LSCV_V_OFFSET);
-
-					lightingProperty->SetController(DynamicCast<NiTimeController>(controller));*/
 					if (!conv.uv_atlas.empty())
 					{
-						if (deferred_blends.find(oldController) != deferred_blends.end())
-							printf("lol");
-						deferred_blends[oldController] = conv.uv_atlas;
+						//if (deferred_blends.find(oldController) != deferred_blends.end())
+						//	printf("lol");
+						deferred_blends[oldController] = { speed, conv.uv_atlas };
 					}
 					material_flip_controllers_map[oldController] = DynamicCast<NiFloatInterpController>(lightingProperty->GetController());
 				}
@@ -2822,10 +3200,56 @@ public:
 				NiAlphaPropertyRef alpha = new NiAlphaProperty();
 				alpha->SetFlags(DynamicCast<NiAlphaProperty>(property)->GetFlags());
 				alpha->SetThreshold(DynamicCast<NiAlphaProperty>(property)->GetThreshold());
+
+				//WRONG!
+				//check if both blending and testing are set
+				//alpha_flags a_flags; a_flags.value = alpha->GetFlags();
+				//if (a_flags.bits.alpha_test_enable && a_flags.bits.color_blending_enable)
+				//{
+				//	//prefer test
+				//	a_flags.bits.color_blending_enable = 0;
+				//	alpha->SetFlags(a_flags.value);
+				//}
+
+				alpha_flags a_flags; a_flags.value = alpha->GetFlags();
+				string texture_diffuse = "";
+				if (a_flags.bits.color_blending_enable && a_flags.bits.readsAlphaSource() && !niflip)
+				{
+					//check if diffuse has alpha
+					vector<string>& textures = textureSet->GetTextures();
+					if (textures.empty()) {
+						for (NiPropertyRef property : properties)
+						{
+							if (property->IsSameType(NiTexturingProperty::TYPE)) {
+								texturing = DynamicCast<NiTexturingProperty>(property);
+								if (texturing->GetBaseTexture().source != NULL) {
+									texture_diffuse = texturing->GetBaseTexture().source->GetFileName();
+									break;
+								}
+							}
+						}
+					}
+					else {
+						texture_diffuse = textures[0];
+						texture_diffuse = replace_all(texture_diffuse, "tes4\\", "");
+					}
+					if (!texture_diffuse.empty())
+					{
+						checkDiffuseAlpha(texture_diffuse, _export_path.string());
+					}
+					else {
+						Log::Error("Alpha blend with no textures! Model will CTD");
+						//avoid crash
+							a_flags.bits.color_blending_enable = 0;
+							alpha->SetFlags(a_flags.value);
+					}
+				}
+
 				obj.SetAlphaProperty(alpha);
 			}
 			if (property->IsSameType(NiSpecularProperty::TYPE)) {
 				hasSpecular = true;
+				hasEnv = true;
 			}
 			if (property->IsSameType(NiZBufferProperty::TYPE)) {
 				hasZbuffer = true;
@@ -2854,11 +3278,17 @@ public:
 		if (hasZbuffer) {
 			shader2 = static_cast<SkyrimShaderPropertyFlags2>(shader2 & ~SkyrimShaderPropertyFlags2::SLSF2_ZBUFFER_WRITE);
 		}
+
+		if (hasRefract) {
+			shader1 = static_cast<SkyrimShaderPropertyFlags1>(shader1 | SkyrimShaderPropertyFlags1::SLSF1_REFRACTION);
+		}
+
 		if (obj.GetSkinInstance() != NULL)
 		{
 			shader1 = static_cast<SkyrimShaderPropertyFlags1>(shader1 | SkyrimShaderPropertyFlags1::SLSF1_SKINNED);
 		}
 
+		//OWN EMIT is required for any form of glow. glow map eventually tones it up or down. Thanks Candoran2
 		if (!hasGlow)
 		{
 			shader2 = static_cast<SkyrimShaderPropertyFlags2>(shader2 & ~SkyrimShaderPropertyFlags2::SLSF2_GLOW_MAP);
@@ -2869,17 +3299,16 @@ public:
 			shader1 = static_cast<SkyrimShaderPropertyFlags1>(shader1 | SkyrimShaderPropertyFlags1::SLSF1_EXTERNAL_EMITTANCE);
 		}
 
-		if (!hasOwnEmit && !hasGlow)
-			shader1 = static_cast<SkyrimShaderPropertyFlags1>(shader1 & ~SkyrimShaderPropertyFlags1::SLSF1_OWN_EMIT);
-		else
-		{
+		if (hasOwnEmit || hasGlow) {
 			shader1 = static_cast<SkyrimShaderPropertyFlags1>(shader1 | SkyrimShaderPropertyFlags1::SLSF1_OWN_EMIT);
-			if (hasOwnEmit && !hasGlow)
-			{
-				shader2 = static_cast<SkyrimShaderPropertyFlags2>(shader2 | SkyrimShaderPropertyFlags2::SLSF2_RIM_LIGHTING);
-			}
+		}
+		else {
+			shader1 = static_cast<SkyrimShaderPropertyFlags1>(shader1 & ~SkyrimShaderPropertyFlags1::SLSF1_OWN_EMIT);
 		}
 
+		if (!hasGlow && !hasOwnEmit && hasEnv) {
+			shader1 = static_cast<SkyrimShaderPropertyFlags1>(shader1 | SkyrimShaderPropertyFlags1::SLSF1_ENVIRONMENT_MAPPING);
+		}
 
 		if (lightingProperty->IsSameType(BSLightingShaderProperty::TYPE))
 		{
@@ -2887,16 +3316,34 @@ public:
 			if (textureSet->GetTextures().size() == 0)
 				obj.SetFlags(obj.GetFlags() + 1);
 
+
+			//hasGlow is unused, just check for its existance
 			if (hasGlow && textureSet->GetTextures().size()>0)
 			{
 				vector<string>& textures = textureSet->GetTextures();
 				string texture_glow = textures[0];
 				texture_glow.erase(texture_glow.end() - 4, texture_glow.end());
 				texture_glow += "_g.dds";
+
 				textures[2] = texture_glow;
 				textureSet->SetTextures(textures);
 
 				ls->SetSkyrimShaderType(ST_GLOW_SHADER);
+			}
+
+			if (hasOwnEmit) {
+				ls->SetSkyrimShaderType(ST_GLOW_SHADER);
+			}
+
+			if (!hasGlow && !hasOwnEmit && hasEnv) {
+
+				ls->SetSkyrimShaderType(ST_ENVIRONMENT_MAP);
+				vector<string>& textures = textureSet->GetTextures();
+
+				textures[4] = "textures\\cubemaps\\ShinyGlass_e.dds"; //TODO: material
+				textures[5] = textures[0]; //use diffuse as env;
+				ls->SetEnvironmentMapScale(0.3); //decent value;
+				textureSet->SetTextures(textures);
 			}
 
 			ls->SetTextureSet(textureSet);
@@ -3008,6 +3455,7 @@ public:
 			if (property->IsSameType(NiTexturingProperty::TYPE)) {
 				texturing = DynamicCast<NiTexturingProperty>(property);
 				string textureName;
+
 				if (texturing->GetBaseTexture().source != NULL) {
 					textureName += texturing->GetBaseTexture().source->GetFileName();
 					//fix for orconebraid
@@ -3015,10 +3463,6 @@ public:
 						textureName = "textures\\characters\\hair\\Grey.dds";
 
 					textureName.insert(9, "tes4\\");
-					string textureNormal = textureName;
-					textureNormal.erase(textureNormal.end() - 4, textureNormal.end());
-					textureNormal += "_n.dds";
-
 					lightingProperty->SetSourceTexture(textureName);
 
 					if (texturing->GetController() == NULL)
@@ -3026,21 +3470,15 @@ public:
 
 					if (texturing->GetController()->IsSameType(NiFlipController::TYPE)) {
 						NiFlipControllerRef oldController = DynamicCast<NiFlipController>(texturing->GetController());
-						FlipBookConverter conv(oldController, StaticCast<BSShaderProperty>(lightingProperty), hasGlow);
-
-						/*BSLightingShaderPropertyFloatControllerRef controller = new BSLightingShaderPropertyFloatController();
-						controller->SetFlags(oldController->GetFlags());
-						controller->SetFrequency(oldController->GetFrequency());
-						controller->SetPhase(oldController->GetPhase());
-						controller->SetStartTime(oldController->GetStartTime());
-						controller->SetStopTime(oldController->GetStopTime());
-						controller->SetTarget(lightingProperty);
-						controller->SetInterpolator(oldController->GetInterpolator());
-						controller->SetTypeOfControlledVariable(LightingShaderControlledVariable::LSCV_V_OFFSET);
-
-						lightingProperty->SetController(DynamicCast<NiTimeController>(controller));*/
+						FlipBookConverter conv(oldController, StaticCast<BSShaderProperty>(lightingProperty), hasGlow, _export_path.string());
+						float speed = 1.;
+						auto blend = DynamicCast<NiBlendFloatInterpolator>(oldController->GetInterpolator());
+						if (NULL != blend && blend->GetFlags() == 3)
+						{
+							speed = (float)Accessor<NiBlendFloatInterpolator>(*blend).play_speed;
+						}
 						if (!conv.uv_atlas.empty())
-							deferred_blends[oldController] = conv.uv_atlas;
+							deferred_blends[oldController] = { speed, conv.uv_atlas };
 						material_flip_controllers_map[oldController] = DynamicCast<NiFloatInterpController>(lightingProperty->GetController());
 					}
 
@@ -3259,61 +3697,119 @@ public:
 	inline void visit_object(NiControllerSequence& obj)
 	{
 
-		nisequences.insert(obj.GetName());
-		vector<ControlledBlock> blocks = obj.GetControlledBlocks();
+		if (find(nisequences.begin(), nisequences.end(), obj.GetName()) == nisequences.end())
+			nisequences.push_back(obj.GetName());
+		vector<ControlledBlock> cblocks = obj.GetControlledBlocks();
 		vector<ControlledBlock> nblocks;
 
 		//for some reason, oblivion's NIF blocks have empty NiTransforms, time to remove.
-		for (int i = 0; i != blocks.size(); i++) {
-			NiInterpolator* intp = blocks[i].interpolator;
+		for (int i = 0; i != cblocks.size(); i++) {
+			NiInterpolator* intp = cblocks[i].interpolator;
 			if (intp == NULL)
 				continue;
-			if (intp->IsDerivedType(NiTransformInterpolator::TYPE)) {
-				NiTransformInterpolator* tintp = DynamicCast<NiTransformInterpolator>(intp);
-				if (tintp->GetData() == NULL)
-					continue;
-			}
-			if (blocks[i].stringPalette != NULL)
+			//if (intp->IsDerivedType(NiTransformInterpolator::TYPE)) {
+			//	NiTransformInterpolator* tintp = DynamicCast<NiTransformInterpolator>(intp);
+			//	if (tintp->GetData() == NULL)
+			//		continue;
+			//}
+			if (cblocks[i].stringPalette != NULL)
 			{
 				//Deprecated. Maybe we can handle with tri facegens
-				if (blocks[i].controller != NULL && blocks[i].controller->IsDerivedType(NiGeomMorpherController::TYPE))
+				if (cblocks[i].controller != NULL && cblocks[i].controller->IsDerivedType(NiGeomMorpherController::TYPE))
 					continue;
 
-				blocks[i].nodeName = getStringFromPalette(blocks[i].stringPalette->GetPalette().palette, blocks[i].nodeNameOffset);
-				blocks[i].controllerType = getStringFromPalette(blocks[i].stringPalette->GetPalette().palette, blocks[i].controllerTypeOffset);
+				cblocks[i].nodeName = getStringFromPalette(cblocks[i].stringPalette->GetPalette().palette, cblocks[i].nodeNameOffset);
+				cblocks[i].controllerType = getStringFromPalette(cblocks[i].stringPalette->GetPalette().palette, cblocks[i].controllerTypeOffset);
 
-				if (blocks[i].propertyTypeOffset != 4294967295)
-					blocks[i].propertyType = getStringFromPalette(blocks[i].stringPalette->GetPalette().palette, blocks[i].propertyTypeOffset);
+				if (cblocks[i].propertyTypeOffset != 4294967295)
+					cblocks[i].propertyType = getStringFromPalette(cblocks[i].stringPalette->GetPalette().palette, cblocks[i].propertyTypeOffset);
 
-				if (blocks[i].controllerIdOffset != 4294967295)
-					blocks[i].controllerId = getStringFromPalette(blocks[i].stringPalette->GetPalette().palette, blocks[i].controllerIdOffset);
+				if (cblocks[i].controllerIdOffset != 4294967295)
+					cblocks[i].controllerId = getStringFromPalette(cblocks[i].stringPalette->GetPalette().palette, cblocks[i].controllerIdOffset);
 
-				if (blocks[i].interpolatorIdOffset != 4294967295)
-					blocks[i].interpolatorId = getStringFromPalette(blocks[i].stringPalette->GetPalette().palette, blocks[i].interpolatorIdOffset);
+				if (cblocks[i].interpolatorIdOffset != 4294967295)
+					cblocks[i].interpolatorId = getStringFromPalette(cblocks[i].stringPalette->GetPalette().palette, cblocks[i].interpolatorIdOffset);
 			}
 
-			if (blocks[i].controller != NULL && blocks[i].controller->IsDerivedType(NiMaterialColorController::TYPE))
+			if (cblocks[i].controller != NULL && cblocks[i].controller->IsDerivedType(NiMaterialColorController::TYPE))
 			{
-				blocks[i].propertyType = "BSLightingShaderProperty";
-				blocks[i].controllerType = "BSLightingShaderPropertyColorController";
+				//std::string node_name = getStringFromPalette(cblocks[i].stringPalette->GetPalette().palette, cblocks[i].nodeNameOffset);
+				//NiNodeRef controlled = NULL;
+				//for (auto& niblock : blocks) {
+				//	if (DynamicCast<NiNode>(niblock) != NULL) {
+				//		NiNodeRef node = DynamicCast<NiNode>(niblock);
+				//		if (node->GetName() == node_name)
+				//		{
+				//			controlled = node;
+				//		}
+				//	}
+				//} 
+				//if (NULL != controlled && controlled->IsDerivedType(NiParticleSystem::TYPE)) {
+				//	cblocks[i].propertyType = "BSEffectShaderProperty";
+				//	cblocks[i].controllerType = "BSEffectShaderPropertyColorController";
+				//}
+				//else {
+				//	cblocks[i].propertyType = "BSLightingShaderProperty";
+				//	cblocks[i].controllerType = "BSLightingShaderPropertyColorController";
+				//}
 			}
-			if (blocks[i].controller != NULL && blocks[i].controller->IsDerivedType(NiTextureTransformController::TYPE))
+			if (cblocks[i].controller != NULL && cblocks[i].controller->IsDerivedType(NiTextureTransformController::TYPE))
 			{
-				blocks[i].propertyType = "BSLightingShaderProperty";
-				blocks[i].controllerType = "BSLightingShaderPropertyFloatController";
+				//std::string node_name = getStringFromPalette(cblocks[i].stringPalette->GetPalette().palette, cblocks[i].nodeNameOffset);
+				//NiNodeRef controlled = NULL;
+				//for (auto& niblock : blocks) {
+				//	if (DynamicCast<NiNode>(niblock) != NULL) {
+				//		NiNodeRef node = DynamicCast<NiNode>(niblock);
+				//		if (node->GetName() == node_name)
+				//		{
+				//			controlled = node;
+				//		}
+				//	}
+				//}
+				//if (NULL != controlled && controlled->IsDerivedType(NiParticleSystem::TYPE)) {
+				//	cblocks[i].propertyType = "BSEffectShaderProperty";
+				//	cblocks[i].controllerType = "BSEffectShaderPropertyFloatController";
+				//}
+				//else {
+				//	cblocks[i].propertyType = "BSLightingShaderProperty";
+				//	cblocks[i].controllerType = "BSLightingShaderPropertyFloatController";
+				//}
+				//std::string node_name = getStringFromPalette(cblocks[i].stringPalette->GetPalette().palette, cblocks[i].nodeNameOffset);
+				//cblocks[i].propertyType = "BSLightingShaderProperty";
+				//cblocks[i].controllerType = "BSLightingShaderPropertyFloatController";
 			}
-			if (blocks[i].controller != NULL && (blocks[i].controller->IsDerivedType(NiAlphaController::TYPE) || blocks[i].controller->IsDerivedType(NiFlipController::TYPE))) //hoping this works
+			if (cblocks[i].controller != NULL && (cblocks[i].controller->IsDerivedType(NiAlphaController::TYPE) || cblocks[i].controller->IsDerivedType(NiFlipController::TYPE))) //hoping this works
 			{
-				blocks[i].propertyType = "BSLightingShaderProperty";
-				blocks[i].controllerType = "BSLightingShaderPropertyFloatController";
+				//std::string node_name = getStringFromPalette(cblocks[i].stringPalette->GetPalette().palette, cblocks[i].nodeNameOffset);
+				//NiNodeRef controlled = NULL;
+				//for (auto& niblock : blocks) {
+				//	if (DynamicCast<NiNode>(niblock) != NULL) {
+				//		NiNodeRef node = DynamicCast<NiNode>(niblock);
+				//		if (node->GetName() == node_name)
+				//		{
+				//			controlled = node;
+				//		}
+				//	}
+				//}
+				//if (NULL != controlled && controlled->IsDerivedType(NiParticleSystem::TYPE)) {
+				//	cblocks[i].propertyType = "BSEffectShaderProperty";
+				//	cblocks[i].controllerType = "BSEffectShaderPropertyFloatController";
+				//}
+				//else {
+				//	cblocks[i].propertyType = "BSLightingShaderProperty";
+				//	cblocks[i].controllerType = "BSLightingShaderPropertyFloatController";
+				//}
+				//std::string node_name = getStringFromPalette(cblocks[i].stringPalette->GetPalette().palette, cblocks[i].nodeNameOffset);
+				//cblocks[i].propertyType = "BSLightingShaderProperty";
+				//cblocks[i].controllerType = "BSLightingShaderPropertyFloatController";
 			}
 
 			//set to default... if above doesn't work
-			if (blocks[i].controllerType == "")
+			if (cblocks[i].controllerType == "")
 				throw runtime_error("controller type is null; will cause errors.");
 
-			blocks[i].stringPalette = NULL;
-			nblocks.push_back(blocks[i]);
+			cblocks[i].stringPalette = NULL;
+			nblocks.push_back(cblocks[i]);
 		}
 		obj.SetControlledBlocks(nblocks);
 		obj.SetStringPalette(NULL);
@@ -3340,7 +3836,6 @@ public:
 		}
 
 		obj.SetTextKeys(textKeys);
-
 	}
 
 	//from now on, we must switch from an old type to hkTransform, so it is useful to directly use havok data
@@ -3349,7 +3844,7 @@ public:
 	inline void visit_object(bhkCollisionObject& obj) {
 		bhkRigidBodyRef ref = DynamicCast<bhkRigidBody>(obj.GetBody());
 		if (ref->GetHavokFilter().layer_ob == OblivionLayer::OL_CLUTTER) {
-			obj.SetFlags((bhkCOFlags)(obj.GetFlags() | BHKCO_SET_LOCAL | BHKCO_SYNC_ON_UPDATE));
+			obj.SetFlags((bhkCOFlags)(obj.GetFlags() | BHKCO_SYNC_ON_UPDATE));
 		}
 		if (already_upgraded.insert(&obj).second) {
 			if (obj.GetBody() != NULL)
@@ -3359,6 +3854,7 @@ public:
 
 	template<>
 	inline void visit_object(bhkBlendCollisionObject& obj) {
+		obj.SetFlags((bhkCOFlags)(obj.GetFlags() | BHKCO_SET_LOCAL | BHKCO_SYNC_ON_UPDATE));
 		if (already_upgraded.insert(&obj).second) {
 			if (obj.GetBody() != NULL)
 				collision_target_map[&*obj.GetBody()] = obj.GetTarget();
@@ -3382,7 +3878,7 @@ public:
 		}
 		if (already_upgraded.insert(&obj).second) {
 			NiAVObject* target = (NiAVObject*)collision_target_map[&obj];
-			Accessor<bhkRigidBodyUpgrader> upgrader(obj, this_info, target);
+			Accessor<bhkRigidBodyUpgrader> upgrader(obj, this_info, target, _collision_translation);
 		}
 	}
 
@@ -3390,13 +3886,14 @@ public:
 	inline void visit_object(bhkRigidBodyT& obj) {
 		HavokFilter ref = obj.GetHavokFilter();
 		if (obj.GetHavokFilter().layer_ob == OblivionLayer::OL_CLUTTER) {
-			obj.SetMotionSystem(MO_SYS_DYNAMIC);
+			obj.SetMotionSystem(MO_SYS_DYNAMIC); //All of skyrim clutter
 			obj.SetSolverDeactivation(SOLVER_DEACTIVATION_LOW);
 			obj.SetQualityType(MO_QUAL_MOVING);
+			obj.SetMass(obj.GetMass() * COLLISION_RATIO);
 		}
 		if (already_upgraded.insert(&obj).second) {
 			NiAVObject* target = (NiAVObject*)collision_target_map[&obj];
-			Accessor<bhkRigidBodyUpgrader> upgrader(obj, this_info, target);
+			Accessor<bhkRigidBodyUpgrader> upgrader(obj, this_info, target, _collision_translation);
 		}
 	}
 
@@ -3426,12 +3923,13 @@ public:
 			convertMaterialAndRadius(obj);
 			Matrix44 transform = obj.GetTransform();
 			Vector3 trans = transform.GetTrans();
+			trans -= _collision_translation;
 			trans.x *= COLLISION_RATIO;
 			trans.y *= COLLISION_RATIO;
 			trans.z *= COLLISION_RATIO;
 			transform.SetTrans(trans);
 			obj.SetTransform(transform);
-			obj.SetShape(upgrade_shape(obj.GetShape(), this_info, NULL));
+			obj.SetShape(upgrade_shape(obj.GetShape(), this_info, NULL, _collision_translation));
 		}
 	}
 
@@ -3441,12 +3939,13 @@ public:
 			convertMaterialAndRadius(obj);
 			Matrix44 transform = obj.GetTransform();
 			Vector3 trans = transform.GetTrans();
+			trans -= _collision_translation;
 			trans.x *= COLLISION_RATIO;
 			trans.y *= COLLISION_RATIO;
 			trans.z *= COLLISION_RATIO;
 			transform.SetTrans(trans);
 			obj.SetTransform(transform);
-			obj.SetShape(upgrade_shape(obj.GetShape(), this_info, NULL));
+			obj.SetShape(upgrade_shape(obj.GetShape(), this_info, NULL, _collision_translation));
 		}
 	}
 
@@ -3456,7 +3955,7 @@ public:
 			HavokMaterial material = obj.GetMaterial();
 			material.material_sk = convert_havok_material(material.material_ob);
 			obj.SetMaterial(material);
-			obj.SetSubShapes(upgrade_shapes(obj.GetSubShapes(), this_info, NULL));
+			obj.SetSubShapes(upgrade_shapes(obj.GetSubShapes(), this_info, NULL, _collision_translation));
 		}
 	}
 
@@ -3480,6 +3979,9 @@ public:
 			half_extent.x *= COLLISION_RATIO;
 			half_extent.y *= COLLISION_RATIO;
 			half_extent.z *= COLLISION_RATIO;
+			//if (_is_clutter) {
+			//	half_extent *= 0.8;
+			//}
 			obj.SetDimensions(half_extent);
 		}
 	}
@@ -3490,8 +3992,8 @@ public:
 			convertMaterialAndRadius(obj);
 			obj.SetRadius1(obj.GetRadius1() * COLLISION_RATIO);
 			obj.SetRadius2(obj.GetRadius2() * COLLISION_RATIO);
-			obj.SetFirstPoint(obj.GetFirstPoint() * COLLISION_RATIO);
-			obj.SetSecondPoint(obj.GetSecondPoint() * COLLISION_RATIO);
+			obj.SetFirstPoint((obj.GetFirstPoint() - _collision_translation) * COLLISION_RATIO);
+			obj.SetSecondPoint((obj.GetSecondPoint() - _collision_translation) * COLLISION_RATIO);
 		}
 	}
 
@@ -3501,14 +4003,22 @@ public:
 			convertMaterialAndRadius(obj);
 			vector<Vector4> vertices = obj.GetVertices();
 			for (Vector4& v : vertices) {
+				v -= _collision_translation;
 				v.x *= COLLISION_RATIO;
 				v.y *= COLLISION_RATIO;
 				v.z *= COLLISION_RATIO;
+				//if (_is_clutter) {
+				//	v *= 0.8;
+				//}
 			}
+
 			obj.SetVertices(vertices);
 			vector<Vector4> normals = obj.GetNormals();
 			for (Vector4& n : normals) {
-				n.w *= COLLISION_RATIO;
+				n.w = n.w * COLLISION_RATIO;
+				//if (_is_clutter) {
+				//	n.w *= 0.8;
+				//}
 			}
 			obj.SetNormals(normals);
 		}
@@ -3525,8 +4035,8 @@ public:
 				TOVECTOR4(descriptor.axis)
 			);
 			data.setInBodySpace(
-				TOVECTOR4(descriptor.parentSpace.pivot),
-				TOVECTOR4(descriptor.childSpace.pivot),
+				TOVECTOR4(descriptor.parentSpace.pivot - _collision_translation),
+				TOVECTOR4(descriptor.childSpace.pivot - _collision_translation),
 				parent_i,
 				TOVECTOR4(descriptor.childSpace.axis)
 			);
@@ -3555,8 +4065,8 @@ public:
 				TOVECTOR4(descriptor.childSpace.referenceSystem.xAxis)
 			);
 			data.setInBodySpace(
-				TOVECTOR4(descriptor.parentSpace.pivot),
-				TOVECTOR4(descriptor.childSpace.pivot),
+				TOVECTOR4(descriptor.parentSpace.pivot - _collision_translation),
+				TOVECTOR4(descriptor.childSpace.pivot - _collision_translation),
 				TOVECTOR4(descriptor.parentSpace.referenceSystem.xAxis),
 				TOVECTOR4(descriptor.childSpace.referenceSystem.xAxis),
 				TOVECTOR4(descriptor.parentSpace.referenceSystem.yAxis),
@@ -3580,7 +4090,8 @@ public:
 
 	template<>
 	void visit_compound(BallAndSocketDescriptor& descriptor) {
-		//Nothing to do;
+		descriptor.pivotA -= _collision_translation;
+		descriptor.pivotB -= _collision_translation;
 	}
 
 	template<>
@@ -3588,8 +4099,8 @@ public:
 		if (already_upgraded.insert(&descriptor).second) {
 			hkpPrismaticConstraintData data;
 			data.setInBodySpace(
-				TOVECTOR4(descriptor.parentSpace.pivot),
-				TOVECTOR4(descriptor.childSpace.pivot),
+				TOVECTOR4(descriptor.parentSpace.pivot - _collision_translation),
+				TOVECTOR4(descriptor.childSpace.pivot - _collision_translation),
 				TOVECTOR4(descriptor.parentSpace.referenceSystem.xAxis),
 				TOVECTOR4(descriptor.childSpace.referenceSystem.xAxis),
 				TOVECTOR4(descriptor.parentSpace.referenceSystem.yAxis),
@@ -3616,6 +4127,8 @@ public:
 	template<>
 	void visit_compound(StiffSpringDescriptor& descriptor) {
 		//Nothing to do;
+		descriptor.pivotA -= _collision_translation;
+		descriptor.pivotB -= _collision_translation;
 	}
 
 	template<>
@@ -3623,8 +4136,8 @@ public:
 		if (already_upgraded.insert(&descriptor).second) {
 			hkpRagdollConstraintData data;
 			data.setInBodySpace(
-				TOVECTOR4(descriptor.parentSpace.pivot),
-				TOVECTOR4(descriptor.childSpace.pivot),
+				TOVECTOR4(descriptor.parentSpace.pivot - _collision_translation),
+				TOVECTOR4(descriptor.childSpace.pivot - _collision_translation),
 				TOVECTOR4(descriptor.parentSpace.referenceSystem.xAxis),
 				TOVECTOR4(descriptor.childSpace.referenceSystem.xAxis),
 				TOVECTOR4(descriptor.parentSpace.referenceSystem.yAxis),
@@ -3711,11 +4224,14 @@ public:
 	inline void visit_object(NiPSysMeshEmitter& obj) {
 		vector<NiAVObject * >& meshes = obj.GetEmitterMeshes();
 		for (int i = 0; i < meshes.size(); i++) {
-			for (NiObjectRef ref : blocks) {
-				if (ref->IsDerivedType(NiAVObject::TYPE)) {
-					NiAVObjectRef av_ref = DynamicCast<NiAVObject>(ref);
-					if (av_ref->GetName() == meshes[i]->GetName()) {
-						meshes[i] = av_ref;
+			if (NULL != meshes[i])
+			{
+				for (NiObjectRef ref : blocks) {
+					if (ref->IsDerivedType(NiAVObject::TYPE)) {
+						NiAVObjectRef av_ref = DynamicCast<NiAVObject>(ref);
+						if (av_ref->GetName() == meshes[i]->GetName()) {
+							meshes[i] = av_ref;
+						}
 					}
 				}
 			}
@@ -3725,10 +4241,11 @@ public:
 
 	template<>
 	inline void visit_object(NiControllerSequence& obj) {
-		vector<ControlledBlock> blocks = obj.GetControlledBlocks();
+		vector<ControlledBlock> cblocks = obj.GetControlledBlocks();
+		vector<ControlledBlock> blocks_to_add;
 
-		for (int i = 0; i != blocks.size(); i++) {
-			NiTimeControllerRef controller = blocks[i].controller;
+		for (int i = 0; i != cblocks.size(); i++) {
+			NiTimeControllerRef controller = cblocks[i].controller;
 
 			//specific fix for oblivion fountains. 
 			if (controller->IsSameType(BSLightingShaderPropertyColorController::TYPE) && controller->GetTarget()->IsSameType(BSEffectShaderProperty::TYPE)) {
@@ -3748,16 +4265,128 @@ public:
 				newController->SetTarget(lightingController->GetTarget());
 				newController->SetTypeOfControlledColor(EffectShaderControlledColor::ECSC_EMISSIVE_COLOR);
 
-				blocks[i].controller = newController;
-				blocks[i].propertyType = "BSEffectShaderProperty";
-				blocks[i].controllerType = "BSEffectShaderPropertyColorController";
+				cblocks[i].controller = newController;
+				cblocks[i].propertyType = "BSEffectShaderProperty";
+				cblocks[i].controllerType = "BSEffectShaderPropertyColorController";
 
 				BSEffectShaderPropertyRef shader = DynamicCast<BSEffectShaderProperty>(newController->GetTarget());
-				shader->SetController(blocks[i].controller);
+				shader->SetController(cblocks[i].controller);
+			}
+			else if (controller->IsSameType(BSLightingShaderPropertyColorController::TYPE) && 
+				DynamicCast<BSLightingShaderPropertyColorController>(controller)->GetTypeOfControlledColor() == LightingShaderControlledColor::LSCC_EMISSIVE_COLOR) {
+				BSLightingShaderPropertyColorControllerRef lightingController = DynamicCast<BSLightingShaderPropertyColorController>(controller);
+				
+				if (lightingController->GetNextController() == NULL) {
+					Log::Error("Found BSLightingShaderPropertyColorController Emissive without next controller!");
+					continue;
+				}
+
+
+
+				BSLightingShaderPropertyFloatControllerRef floatController = DynamicCast<BSLightingShaderPropertyFloatController>(lightingController->GetNextController());
+
+				NiFloatInterpolatorRef float_interpolator = DynamicCast< NiFloatInterpolator>(floatController->GetInterpolator());
+
+				NiBlendFloatInterpolatorRef blend_interpolator = new NiBlendFloatInterpolator();
+				Accessor<BlendUnknownSet>(2, blend_interpolator);
+				blend_interpolator->SetFlags(InterpBlendFlags::MANAGER_CONTROLLED);
+				blend_interpolator->SetManagedControlled(true);
+
+
+
+				//blocks.push_back(StaticCast<NiObject>(float_interpolator));
+
+				ControlledBlock another_block = cblocks[i];
+				another_block.interpolator = float_interpolator;
+				another_block.controller = floatController;
+				another_block.controllerType = "BSLightingShaderPropertyFloatController";
+				cblocks.insert(cblocks.begin() + i + 1, another_block);
+
+				floatController->SetInterpolator(StaticCast<NiInterpolator>(blend_interpolator));
+			}
+		}
+		//renumber
+		size_t controller_id = 1;
+		for (int i = 0; i < cblocks.size(); i++) {
+			NiTimeControllerRef controller = cblocks[i].controller;
+
+
+			//Fix names
+			if (controller->IsSameType(BSLightingShaderPropertyColorController::TYPE))
+			{
+				cblocks[i].propertyType = "BSLightingShaderProperty";
+				cblocks[i].controllerType = "BSLightingShaderPropertyColorController";
+			}
+			if (controller->IsSameType(BSEffectShaderPropertyColorController::TYPE))
+			{
+				cblocks[i].propertyType = "BSEffectShaderProperty";
+				cblocks[i].controllerType = "BSEffectShaderPropertyColorController";
+			}
+			if (controller->IsSameType(BSLightingShaderPropertyFloatController::TYPE))
+			{
+				cblocks[i].propertyType = "BSLightingShaderProperty";
+				cblocks[i].controllerType = "BSLightingShaderPropertyFloatController";
+			}
+			if (controller->IsSameType(BSEffectShaderPropertyFloatController::TYPE))
+			{
+				cblocks[i].propertyType = "BSEffectShaderProperty";
+				cblocks[i].controllerType = "BSEffectShaderPropertyFloatController";
+			}
+
+			if (controller->IsSameType(BSLightingShaderPropertyColorController::TYPE) || 
+				controller->IsSameType(BSEffectShaderPropertyColorController::TYPE) ||
+				controller->IsSameType(BSLightingShaderPropertyFloatController::TYPE) || 
+				controller->IsSameType(BSEffectShaderPropertyFloatController::TYPE))
+			{
+
+
+				cblocks[i].controllerId = std::to_string(controller_id++);
 			}
 		}
 
-		obj.SetControlledBlocks(blocks);
+		multimap<NiObjectNET*, NiTimeControllerRef> object_controller_map;
+
+		//Compose back controllers over properties
+		for (int i = 0; i < cblocks.size(); i++) {
+			if (cblocks[i].controller->IsSameType(NiMultiTargetTransformController::TYPE))
+				continue;
+			NiTimeControllerRef this_controller = cblocks[i].controller;
+			while (this_controller != NULL) {
+				if (!this_controller->IsSameType(NiMultiTargetTransformController::TYPE))
+					object_controller_map.insert({ this_controller->GetTarget(), this_controller });
+				this_controller = this_controller->GetNextController();
+			}
+		}
+
+		set<NiObjectNET*> targets;
+
+		for (multimap<NiObjectNET*, NiTimeControllerRef>::iterator it = object_controller_map.begin(), 
+			end = object_controller_map.end(); it != end; it = object_controller_map.upper_bound(it->first))
+		{
+			targets.insert(it->first);
+		}
+
+		for (const auto& target : targets) {
+			auto its = object_controller_map.equal_range(target);
+			NiTimeControllerRef last = NULL;
+			if (distance(its.first, its.second)>1)
+			{
+				for (auto it = its.first; it != its.second; it++)
+				{
+					if (!last) {
+						target->SetController(it->second);
+					}
+					else {
+						last->SetNextController(it->second);
+					}
+					last = it->second;
+				}
+				last->SetNextController(NULL);
+			}
+		}
+
+
+		obj.SetControlledBlocks(cblocks);
 	}
 
 	template<>
@@ -3974,6 +4603,329 @@ void findFiles(fs::path startingDir, string extension, vector<fs::path>& results
 	}
 }
 
+void check_bb_max_min(Vector3& max, Vector3& min, const hkVector4& vertex) {
+	if (vertex(0) < min[0]) min[0] = vertex(0);
+	if (vertex(1) < min[1]) min[1] = vertex(1);
+	if (vertex(2) < min[2]) min[2] = vertex(2);
+	if (vertex(0) > max[0]) max[0] = vertex(0);
+	if (vertex(1) > max[1]) max[1] = vertex(1);
+	if (vertex(2) > max[2]) max[2] = vertex(2);
+}
+
+
+
+Vector3 center_model(NiObjectRef root, vector<NiObjectRef>& blocks)
+{
+	std::deque<NiNodeRef> visit_stack;
+	std::vector<std::pair<hkTransform, NiGeometryRef>> geometries;
+
+	std::function<void(NiObjectRef, std::deque<NiNodeRef>&)> findShapesToBeTranslated = [&](NiObjectRef current_node, std::deque<NiNodeRef>& stack) {
+		//recurse until we find a shape, avoiding rb as their mesh will be taken into account later
+		if (current_node->IsDerivedType(NiNode::TYPE))
+		{
+			stack.push_front(DynamicCast<NiNode>(current_node));
+			vector<NiAVObjectRef> children = DynamicCast<NiNode>(current_node)->GetChildren();
+			for (int i = 0; i < children.size(); i++) {
+				if (NULL == children[i])
+					continue;
+				if (children[i]->IsDerivedType(NiGeometry::TYPE))
+				{
+					//found leaf;
+					hkTransform transform_from_rigid_body; transform_from_rigid_body.setIdentity();
+					for (const auto& node : stack) {
+						hkTransform this_transform = TOHKTRANSFORM(node->GetRotation(), node->GetTranslation(), node->GetScale());
+						transform_from_rigid_body.setMul(this_transform, transform_from_rigid_body);
+					}
+					auto this_node = DynamicCast<NiAVObject>(children[i]);
+					hkTransform this_transform = TOHKTRANSFORM(this_node->GetRotation(), this_node->GetTranslation(), this_node->GetScale());
+					transform_from_rigid_body.setMul(this_transform, transform_from_rigid_body);
+
+					geometries.push_back({ transform_from_rigid_body , DynamicCast< NiGeometry>(children[i]) });
+				}
+				else
+					findShapesToBeTranslated(StaticCast<NiObject>(children[i]), stack);
+			}
+			stack.pop_front();
+		}
+	};
+
+	findShapesToBeTranslated(root, visit_stack);
+
+
+	Vector3 center = { 0., 0., 0. };
+	Vector3 bb_max = { std::numeric_limits<float>::min(), std::numeric_limits<float>::min(), std::numeric_limits<float>::min() };
+	Vector3 bb_min = { std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max() };
+	for (const auto geometry : geometries) {
+		const hkTransform& transform = geometry.first;
+		const NiGeometryRef& shape = geometry.second;
+
+		if (shape->IsSameType(NiTriShape::TYPE)) {
+			auto data = DynamicCast<NiTriShape>(shape)->GetData();
+			const auto vertices = data->GetVertices();
+			for (const auto& vertex : vertices) {
+				hkVector4 hvertex = { vertex[0],  vertex[1], vertex[2] };
+				hvertex.setTransformedPos(transform, hvertex);
+				check_bb_max_min(bb_max, bb_min, hvertex);
+			}
+		}
+		if (shape->IsSameType(NiTriStrips::TYPE)) {
+			auto data = DynamicCast<NiTriStrips>(shape)->GetData();
+			const auto vertices = data->GetVertices();
+			for (const auto& vertex : vertices) {
+				hkVector4 hvertex = { vertex[0],  vertex[1], vertex[2] };
+				hvertex.setTransformedPos(transform, hvertex);
+				check_bb_max_min(bb_max, bb_min, hvertex);
+			}
+		}
+	}
+
+	center = (bb_max + bb_min) / 2;
+	Vector3 translation = { center[0], center[1], bb_min[2] };
+	//Vector3 translation = { 0, 0, 0 };
+	//Vector3 collision_translation = { translation[0] * 0.1428f, translation[1] * 0.1428f, translation[2] * 0.1428f }; //oblivion scale
+	Vector3 collision_translation = { translation[0] * 0.1428f, translation[1] * 0.1428f, translation[2] * 0.1428f }; //oblivion scale
+	
+
+	auto avroot = DynamicCast<NiNode>(root);
+	hkTransform transform(TOMATRIX3(avroot->GetRotation()), TOVECTOR4(avroot->GetTranslation()));
+
+	for (const auto& children : avroot->GetChildren()) {
+		//move the whole first level hierarchy
+		if (NULL == children)
+			continue;
+		if (children->IsDerivedType(NiAVObject::TYPE)) {
+			auto avchildren = DynamicCast<NiAVObject>(children); 
+			hkTransform avchildren_transform(TOMATRIX3(avchildren->GetRotation()), TOVECTOR4(avchildren->GetTranslation()));
+
+			avchildren_transform.setMul(transform, avchildren_transform);
+
+			avchildren->SetTranslation(
+				TOMATRIX44(avchildren_transform).GetTrans() - translation
+			);
+			avchildren->SetRotation(
+				TOMATRIX44(avchildren_transform).GetRotation().Transpose()
+			);
+			avchildren->SetScale(
+				avroot->GetScale() * avchildren->GetScale()
+			);
+		}
+	}
+
+	std::function<bhkShapeRef(bhkShapeRef, const hkTransform&)> moveShape = [&](bhkShapeRef shape, const hkTransform& root_transform) -> bhkShapeRef {
+		if (shape->IsSameType(bhkConvexTransformShape::TYPE)) 
+		{
+			auto transform = root_transform;
+			auto collision_matrix = TOMATRIX44(transform);
+			auto collision_trans = (TOVECTOR3(transform.getTranslation())) * 0.1428f;
+			transform.setTranslation(TOVECTOR4(collision_trans));
+
+			auto obj = DynamicCast<bhkConvexTransformShape>(shape);
+			hkTransform avchildren_transform(TOMATRIX4(obj->GetTransform()));
+			avchildren_transform.setMul(transform, avchildren_transform);
+
+			obj->SetTransform(TOMATRIX44(avchildren_transform));
+			return obj;
+		}
+
+		else if (shape->IsSameType(bhkListShape::TYPE)) {
+
+			auto obj = DynamicCast<bhkListShape>(shape);
+			auto shapes = obj->GetSubShapes();
+			for (int i = 0; i < shapes.size(); i++) {
+				shapes[i] = moveShape(shapes[i], transform);
+			}
+			obj->SetSubShapes(shapes);
+			return obj;
+		}
+
+		else if (shape->IsSameType(bhkConvexVerticesShape::TYPE)) {
+			auto transform = root_transform;
+			auto collision_matrix = TOMATRIX44(transform);
+			auto collision_trans = (TOVECTOR3(transform.getTranslation())) * 0.1428f;
+			transform.setTranslation(TOVECTOR4(collision_trans));
+
+			auto obj = DynamicCast<bhkConvexVerticesShape>(shape);
+			vector<Vector4> vertices = obj->GetVertices();
+			for (Vector4& v : vertices) {
+				hkVector4 vv = TOVECTOR4(v);
+				vv.setTransformedPos(transform, vv);
+				v = TOVECTOR3(vv);
+			}
+			obj->SetVertices(vertices);
+			return obj;
+		}
+
+		else if (shape->IsSameType(bhkMeshShape::TYPE)) {
+			auto obj = DynamicCast<bhkMeshShape>(shape);
+			float							factor(COLLISION_RATIO * 0.1428f);
+			vector<NiTriStripsDataRef> shapes(obj->GetStripsData());
+
+			for (auto& shape : shapes) {
+				vector<Vector3> vertices(shape->GetVertices());
+				for (auto& v : vertices) {
+					hkVector4 vv = TOVECTOR4(v);
+					vv.setTransformedPos(root_transform, vv);
+					v = TOVECTOR3(vv);
+				}
+				shape->SetVertices(vertices);
+			}
+			return obj;
+		}
+		else if (shape->IsSameType(bhkNiTriStripsShape::TYPE)) {
+			auto obj = DynamicCast<bhkNiTriStripsShape>(shape);
+			vector<NiTriStripsDataRef> shapes(obj->GetStripsData());
+
+			int shape_index = 0;
+
+			for (auto& shape : shapes) {
+				vector<Vector3> vertices(shape->GetVertices());
+				for (auto& v : vertices) {
+					hkVector4 vv = TOVECTOR4(v);
+					vv.setTransformedPos(root_transform, vv);
+					v = TOVECTOR3(vv);
+				}
+				shape->SetVertices(vertices);
+			}
+			return obj;
+		}
+
+		else if (shape->IsSameType(bhkSphereShape::TYPE)) {
+			auto transform = root_transform;
+			auto collision_matrix = TOMATRIX44(transform);
+			auto collision_trans = (TOVECTOR3(transform.getTranslation())) * 0.1428f;
+			transform.setTranslation(TOVECTOR4(collision_trans));
+
+			auto obj = DynamicCast<bhkSphereShape>(shape);
+			bhkTransformShapeRef mover = new bhkConvexTransformShape();
+			mover->SetShape(shape);
+			mover->SetTransform(TOMATRIX44(transform));
+			mover->SetMaterial(obj->GetMaterial());
+			blocks.push_back(StaticCast<NiObject>(mover));
+			return mover;
+		}
+		else if (shape->IsSameType(bhkBoxShape::TYPE)) {
+			auto transform = root_transform;
+			auto collision_matrix = TOMATRIX44(transform);
+			auto collision_trans = (TOVECTOR3(transform.getTranslation())) * 0.1428f;
+			transform.setTranslation(TOVECTOR4(collision_trans));
+
+			auto obj = DynamicCast<bhkBoxShape>(shape);
+			bhkTransformShapeRef mover = new bhkConvexTransformShape();
+			mover->SetShape(shape);
+			mover->SetTransform(TOMATRIX44(transform));
+			mover->SetMaterial(obj->GetMaterial());
+			blocks.push_back(StaticCast<NiObject>(mover));
+			return mover;
+		}
+		else if (shape->IsSameType(bhkCapsuleShape::TYPE)) {
+			auto transform = root_transform;
+			auto collision_matrix = TOMATRIX44(transform);
+			auto collision_trans = (TOVECTOR3(transform.getTranslation())) * 0.1428f;
+			transform.setTranslation(TOVECTOR4(collision_trans));
+
+			auto obj = DynamicCast<bhkCapsuleShape>(shape);
+			hkVector4 vv = TOVECTOR4(obj->GetFirstPoint());
+			vv.setTransformedPos(transform, vv);
+			obj->SetFirstPoint(TOVECTOR3(vv));
+			vv = TOVECTOR4(obj->GetSecondPoint());
+			vv.setTransformedPos(transform, vv);
+			obj->SetSecondPoint(TOVECTOR3(vv));
+
+			return shape;
+		}
+		else if (shape->IsSameType(bhkMoppBvTreeShape::TYPE)) {
+			auto obj = DynamicCast<bhkMoppBvTreeShape>(shape);
+			moveShape(obj->GetShape(), root_transform);
+			return obj;
+		}
+		else if (shape->IsSameType(bhkMultiSphereShape::TYPE)) {
+			auto transform = root_transform;
+			auto collision_matrix = TOMATRIX44(transform);
+			auto collision_trans = (TOVECTOR3(transform.getTranslation())) * 0.1428f;
+			transform.setTranslation(TOVECTOR4(collision_trans));
+
+			auto obj = DynamicCast<bhkMultiSphereShape>(shape);
+			auto spheres = obj->GetSpheres();
+			for (auto& sphere : spheres) {
+				hkVector4 vv = TOVECTOR4(sphere.center);
+				vv.setTransformedPos(transform, vv);
+				sphere.center = TOVECTOR3(vv);
+			}
+			obj->SetSpheres(spheres);
+			return obj;
+		}
+		else {
+			Log::Info("Collision Bug!");
+		}
+		return shape;
+	};
+
+
+	//Now move the root collision
+	if (NULL != avroot->GetCollisionObject())
+	{
+		bhkCollisionObjectRef root_collision = DynamicCast<bhkCollisionObject>(avroot->GetCollisionObject());
+		bhkRigidBodyRef body = DynamicCast<bhkRigidBody>(root_collision->GetBody());
+		if (body->IsSameType(bhkRigidBodyT::TYPE)) {
+			hkQTransform hbody(TOQUAT(body->GetRotation()), TOVECTOR4(body->GetTranslation()));
+			::hkQuaternion hqr(TOMATRIX3(avroot->GetRotation()));
+			hkQTransform hroot(hqr, TOVECTOR4(avroot->GetTranslation()));
+
+			hroot.setMul(hroot, hbody);
+
+
+			auto qrot = hroot.getRotation();
+
+			Niflib::hkQuaternion f;
+			f.x = qrot(0);
+			f.y = qrot(1);
+			f.z = qrot(2);
+			f.w = qrot(3);
+			body->SetRotation(
+				f
+			);
+
+			body->SetTranslation(
+				(TOVECTOR3(hroot.getTranslation()) - translation* 0.1428f)
+			);
+
+		}
+		else {
+			auto collision_matrix = TOMATRIX44(transform);
+			auto collision_trans = (TOVECTOR3(transform.getTranslation()) - translation);
+			transform.setTranslation(TOVECTOR4(collision_trans));
+			body->SetShape(moveShape(body->GetShape(), transform));
+		}
+	}
+
+	//TODO: adjust absolutes RB
+
+
+	//remove transform from root node
+	avroot->SetTranslation({});
+	avroot->SetRotation({});
+	avroot->SetScale(1.);
+
+	return translation;
+}
+
+int is_clutter_or_furniture(vector<NiObjectRef>& blocks, const string& path)
+{
+	for (const auto& block : blocks)
+	{
+		if (block->IsDerivedType(bhkRigidBody::TYPE)) {
+			bhkRigidBodyRef ref = DynamicCast<bhkRigidBody>(block);
+			if (ref->GetHavokFilter().layer_ob == OblivionLayer::OL_CLUTTER || ref->GetHavokFilter().layer_ob == OblivionLayer::OL_PROPS) {
+				return 1;
+			}
+		}
+		if (block->IsDerivedType(BSFurnitureMarker::TYPE)) {
+			return 2;
+		}
+	}
+	return 0;
+}
+
 void convert_blocks(
 	vector<NiObjectRef>& blocks, 
 	vector<NiObjectRef>& out_blocks, 
@@ -3981,17 +4933,33 @@ void convert_blocks(
 	HKXWrapperCollection& wrappers,
 	NifInfo& info,
 	fs::path nif_file_path,
-	fs::path exportPath)
+	fs::path exportPath,
+	vector<pair<string, Vector3>>& metadata)
 {
+
 	//this is all hacky but ehhhh.
 	bool isBillboardRoot = false;
 	BillboardMode mode = BillboardMode::ALWAYS_FACE_CAMERA;
 
 	//vector<NiObjectRef> blocks = ReadNifList(nifs[i].string().c_str(), &info);
 	root = GetFirstRoot(blocks);
+
+	Vector3 translation = { 0., 0., 0. };
+	int is_clutter_or_furn = is_clutter_or_furniture(blocks, nif_file_path.string());
+	if (is_clutter_or_furn)
+	{
+		translation = center_model(root, blocks);
+		metadata.push_back(
+			{
+				nif_file_path.filename().string(),
+				translation
+			}
+		);
+	}
+
 	NiNode* rootn = DynamicCast<NiNode>(root);
 
-	ConverterVisitor fimpl(info, root, blocks);
+	ConverterVisitor fimpl(info, root, blocks, translation, { 0.,0.,0. }, is_clutter_or_furn == 1, exportPath);
 
 	if (root->IsSameType(NiBillboardNode::TYPE)) {
 		isBillboardRoot = true;
@@ -4001,29 +4969,78 @@ void convert_blocks(
 	info.userVersion = 12;
 	info.userVersion2 = 83;
 	info.version = Niflib::VER_20_2_0_7;
-	set<string> sequences = fimpl.nisequences;
+	vector<string> sequences = fimpl.nisequences;
 	if (!NifFile::hasExternalSkinnedMesh(blocks, rootn)) {
 		root = convert_root(root);
 		BSFadeNodeRef bsroot = DynamicCast<BSFadeNode>(root);
 		//fixed?
 		bsroot->SetFlags(524302);
-		string out_havok_path = "";
-		if (!sequences.empty()) {
-			fs::path in_file = nif_file_path.filename();
-			string out_name = in_file.filename().replace_extension("").string();
-			fs::path out_path = fs::path("animations") / in_file.parent_path() / out_name;
-			fs::path out_path_abs = exportPath / out_path;
-			string out_path_a = out_path_abs.string();
-			out_havok_path = wrappers.wrap(out_name, out_path.parent_path().string(), out_path_a, "TES4", sequences);
-			vector<Ref<NiExtraData > > list = bsroot->GetExtraDataList();
-			BSBehaviorGraphExtraDataRef havokp = new BSBehaviorGraphExtraData();
-			havokp->SetName(string("BGED"));
-			havokp->SetBehaviourGraphFile(out_havok_path);
-			havokp->SetControlsBaseSkeleton(false);
-			list.insert(list.begin(), StaticCast<NiExtraData>(havokp));
-			bsroot->SetExtraDataList(list);
-		}
 
+		//TODO: fix along creatures creating animationdata/ animationsetdata
+		//string out_havok_path = "";
+		//if (!sequences.empty()) {
+		//	fs::path in_file = nif_file_path.filename();
+		//	string out_name = in_file.filename().replace_extension("").string();
+		//	fs::path out_path = fs::path("tes4") / fs::path("animations") / in_file.parent_path() / out_name;
+		//	fs::path out_path_abs = exportPath / out_path;
+		//	if (exportPath.empty())
+		//		out_path_abs = games.data(Games::TES5SE) / "meshes" / out_path;
+		//	string out_path_a = out_path_abs.string();
+		//	out_havok_path = wrappers.wrap(out_name, out_path.parent_path().string(), out_path_a, "TES4", sequences);
+		//	vector<Ref<NiExtraData > > list = bsroot->GetExtraDataList();
+		//	BSBehaviorGraphExtraDataRef havokp = new BSBehaviorGraphExtraData();
+		//	havokp->SetName(string("BGED"));
+		//	havokp->SetBehaviourGraphFile(out_havok_path);
+		//	havokp->SetControlsBaseSkeleton(false);
+		//	list.insert(list.begin(), StaticCast<NiExtraData>(havokp));
+		//	bsroot->SetExtraDataList(list);
+		//}
+
+		if (!sequences.empty()) {
+			if (sequences == vector<string>({ "Open", "Close" }))
+			{
+				//NTD, doors do not need behaviors
+			}
+			else
+			{
+				fs::path relative_path = fs::path("meshes") / fs::path("tes4") / fs::path("behaviors") / "two_idle_trans";
+				fs::path out_path_abs = exportPath / relative_path;
+				string BGED_file = "";
+
+				if (exportPath.empty())
+					out_path_abs = games.data(Games::TES5SE) / relative_path;
+
+				if (sequences == vector<string>({ "SpecialIdle", "Forward", "Unequip", "Backward" })) {
+					//Oblivion Gates!
+					BGED_file = wrappers.wrap(
+						"AutoPlayRagdoll", 
+						relative_path.string(), 
+						out_path_abs.string(), 
+						"TES4", 
+						HKXWrapper::DefaultBehaviors::autoplay_with_transitions
+					);
+				}
+				else if (sequences == vector<string>({ "Left", "Equip", "SpecialIdle", "Forward", "Unequip", "Backward" })) {
+					//Oblivion Gates!
+
+				}
+				else if (sequences == vector<string>({ "Equip", "Forward", "Unequip" })) {
+					//Oblivion Gates!
+
+				}
+
+				if (!BGED_file.empty())
+				{
+					vector<Ref<NiExtraData > > list = bsroot->GetExtraDataList();
+					BSBehaviorGraphExtraDataRef havokp = new BSBehaviorGraphExtraData();
+					havokp->SetName(string("BGED"));
+					havokp->SetBehaviourGraphFile(BGED_file);
+					havokp->SetControlsBaseSkeleton(false);
+					list.insert(list.begin(), StaticCast<NiExtraData>(havokp));
+					bsroot->SetExtraDataList(list);
+				}
+			}
+		}
 
 		std::vector<NiAVObjectRef> children;
 
@@ -4048,6 +5065,8 @@ void convert_blocks(
 		}
 		else
 		{
+			//bsroot->SetTranslation(displacement);
+
 			if (bsroot->GetTranslation().Magnitude() != 0 ||
 				!bsroot->GetRotation().isIdentity())
 			{
@@ -4177,6 +5196,47 @@ bool BeginConversion(string importPath, string exportPath) {
 
 	NifInfo info;
 	vector<fs::path> nifs;
+	vector<fs::path> spts;
+
+//Script debug
+//	  
+//	double x = 0.000011 * 1.21;
+//	double y = 0.000001 * 1.21;
+//	double z = -13.542925 * 1.21;
+//	double rx = 251.7730;
+//	double ry = 484.3785;
+//	double rz = 86.6988;
+//
+//	double deg_to_rad = 0.0174533;
+//
+//	//Euler XYZ
+//	double r_alpha = -(-86.7472 * deg_to_rad);
+//	double r_beta = -(-18.8064 * deg_to_rad);
+//	double r_gamma = -(267.2364 * deg_to_rad);
+//
+//#define Cos cos
+//#define Sin sin
+//
+//	//Build Matrix
+//	double r11 = Cos(r_beta) * Cos(r_gamma);
+//	double r12 = -Cos(r_beta) * Sin(r_gamma);
+//	double r13 = Sin(r_beta);
+//	double r21 = Cos(r_alpha) * Sin(r_gamma) + Cos(r_gamma) * Sin(r_alpha) * Sin(r_beta);
+//	double r22 = Cos(r_alpha) * Cos(r_gamma) - Sin(r_alpha) * Sin(r_beta) * Sin(r_gamma);
+//	double r23 = -Cos(r_beta) * Sin(r_alpha);
+//	double r31 = Sin(r_alpha) * Sin(r_gamma) - Cos(r_alpha) * Cos(r_gamma) * Sin(r_beta);
+//	double r32 = Cos(r_gamma) * Sin(r_alpha) + Cos(r_alpha) * Sin(r_beta) * Sin(r_gamma);
+//	double r33 = Cos(r_alpha) * Cos(r_beta);
+//
+//	//Inverse transform, R^T * [x,y,z]
+//	double dx = r11 * x + r12 * y + r13 * z;
+//	double dy = r21 * x + r22 * y + r23 * z;
+//	double dz = r31 * x + r32 * y + r33 * z;
+//
+//	rx = rx + dx;
+//	ry = ry + dy;
+//	//rz := rz - z; // revert previous displacement
+//	rz = rz + dz;
 
 	if (fs::exists(importPath) && fs::is_directory(importPath))
 		findFiles(importPath, ".nif", nifs);
@@ -4187,19 +5247,33 @@ bool BeginConversion(string importPath, string exportPath) {
 		findFiles(importPath, ".spt", nifs);
 #endif
 
+	if (fs::exists(importPath) && fs::is_directory(importPath))
+		findFiles(importPath, ".spt", spts);
+
+	//D:\skywind\test\skyblivion\trees
+
 	set<set<string>> sequences_groups;
 	HKXWrapperCollection wrappers;
-	if (nifs.empty()) {
+	std::vector<std::pair<std::string, Vector3>> metadata;
+	fs::path out_path;
+	if (nifs.empty() && spts.empty()) {
 		Log::Info("No NIFs found.. trying BSAs");
 		const Games::GamesPathMapT& installations = games.getGames();
 		games.loadBsas(Games::TES4);
+		exportPath = games.data(Games::TES5SE).string();
 		for (const auto& bsa_file : games.bsa_files()) {
 			//std::cout << "Checking: " << bsa.filename() << std::endl;
 			//BSAFile bsa_file(bsa);
+
 			for (const auto& nif : bsa_file.assets(".*\.nif")) {
 				Log::Info("Current File: %s", nif.c_str());
 
-				fs::path out_path = nif_out / nif;
+				std::string nif_path = nif;
+				if (nif.find("meshes") == 0) {
+					nif_path = "meshes\\tes4" + nif_path.substr(std::string("meshes").size(), nif_path.size());
+				}
+
+				out_path = games.data(Games::TES5SE) / nif_path;
 
 				if (nif.find("meshes\\landscape\\lod") != string::npos) {
 					Log::Warn("Ignored LOD file: %s", nif.c_str());
@@ -4225,6 +5299,10 @@ bool BeginConversion(string importPath, string exportPath) {
 					Log::Warn("temporarily ignoring: %s", nif.c_str());
 					continue;
 				}
+				if (nif.find("\\hair\\") != string::npos) {
+					Log::Warn("temporarily ignoring: %s", nif.c_str());
+					continue;
+				}
 				size_t size = -1;
 				const uint8_t* data = bsa_file.extract(nif, size);
 
@@ -4241,10 +5319,11 @@ bool BeginConversion(string importPath, string exportPath) {
 					wrappers,
 					info,
 					nif,
-					exportPath
+					exportPath,
+					metadata
 				);
 
-				out_path = nif_out / nif;
+				//out_path = nif_out / nif;
 				fs::create_directories(out_path.parent_path());
 				WriteNifTree(out_path.string(), root, info);
 				material_controllers_map.clear();
@@ -4255,8 +5334,78 @@ bool BeginConversion(string importPath, string exportPath) {
 				delete data;
 			}
 		}
+	
+		//Log::Info("Scanning TES4 Override");
+		////Convert overrides for uesp patch
+		//importPath = (games.data(Games::TES4) / "meshes").string();
+		//if (fs::exists(importPath) && fs::is_directory(importPath))
+		//	findFiles(importPath, ".nif", nifs);
+
+		//for (size_t i = 0; i < nifs.size(); i++) {
+		//	Log::Info("Current File: %s", nifs[i].string().c_str());
+
+		//	if (nifs[i].string().find("lod") != string::npos || nifs[i].string().find("LOD") != string::npos)
+		//		continue;
+
+		//	NiObjectRef root;
+		//	vector<NiObjectRef> blocks = ReadNifList(nifs[i].string().c_str(), &info);
+		//	vector<NiObjectRef> new_blocks;
+		//	convert_blocks(
+		//		blocks,
+		//		new_blocks,
+		//		root,
+		//		wrappers,
+		//		info,
+		//		nifs[i],
+		//		exportPath,
+		//		metadata
+		//	);
+
+		//	size_t offset = nifs[i].parent_path().string().find("meshes", 0);
+		//	size_t end = nifs[i].parent_path().string().length();
+		//	std::string newPath = exportPath;
+		//	if (offset < end) {
+		//		std::string relative_path = nifs[i].parent_path().string().substr(offset, end);
+		//		relative_path.insert(6, "\\tes4");
+		//		newPath += std::string("\\") + relative_path;
+		//	}
+		//	out_path = newPath / nifs[i].filename();
+		//	fs::create_directories(out_path.parent_path());
+		//	WriteNifTree(out_path.string(), root, info);
+		//	material_controllers_map.clear();
+		//	material_alpha_controllers_map.clear();
+		//	material_flip_controllers_map.clear();
+		//	deferred_blends.clear();
+		//	material_transform_controllers_map.clear();
+		//}
+	
 	}
 	else {
+		//Load metadata
+		map<string, string> tree_metadata;
+		ifstream  exported_metadata("D:\\gitroot\\ck-cmd\\xedit\\Skyblivion_metadata\\trees.txt");
+		if (exported_metadata.is_open() && exported_metadata.good())
+		{
+			std::string line;
+			while (std::getline(exported_metadata, line)) {
+				size_t index = line.find(";");
+				if (index != string::npos) {
+					tree_metadata.insert(
+						{
+							line.substr(0, index),
+							line.substr(index + 1, line.size() - index - 1)
+						}
+					);
+				}
+			}
+			exported_metadata.close();
+		}
+
+
+		for (size_t i = 0; i < spts.size(); i++) {
+			sptconvert(spts[i], exportPath, tree_metadata);
+		}
+
 		for (size_t i = 0; i < nifs.size(); i++) {
 			Log::Info("Current File: %s", nifs[i].string().c_str());
 #ifdef HAVE_SPEEDTREE
@@ -4284,7 +5433,8 @@ bool BeginConversion(string importPath, string exportPath) {
 				wrappers,
 				info,
 				nifs[i],
-				exportPath
+				exportPath,
+				metadata
 			);
 
 			size_t offset = nifs[i].parent_path().string().find("meshes", 0);
@@ -4292,7 +5442,7 @@ bool BeginConversion(string importPath, string exportPath) {
 			std::string newPath = exportPath;
 			if (offset < end)
 				newPath += nifs[i].parent_path().string().substr(offset, end);
-			fs::path out_path = newPath / nifs[i].filename();
+			out_path = newPath / nifs[i].filename();
 			fs::create_directories(out_path.parent_path());
 			WriteNifTree(out_path.string(), root, info);
 			material_controllers_map.clear();
@@ -4301,6 +5451,21 @@ bool BeginConversion(string importPath, string exportPath) {
 			deferred_blends.clear();
 			material_transform_controllers_map.clear();
 		}
+	}
+	if (metadata.size())
+	{
+		Log::Info("Writing Metadata...");
+		std::ofstream metadata_out;
+		metadata_out.open((fs::path(exportPath) / "skyblivion.metadata").string(), ios::out | ios::trunc);
+		for (const auto& data : metadata) {
+			metadata_out << "[" << data.first << "]" << endl;
+			metadata_out << "TRANSLATE_VECTOR" << " " <<
+				to_string(data.second.x) << " " <<
+				to_string(data.second.y) << " " <<
+				to_string(data.second.z) << " " << endl;
+			metadata_out << endl;
+		}
+		metadata_out.close();
 	}
 	Log::Info("Done");
 	return true;

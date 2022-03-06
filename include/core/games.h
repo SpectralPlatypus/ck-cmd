@@ -33,6 +33,7 @@ namespace ckcmd {
 					!_tcscmp(keyName, _T("Fallout4")) ||
 					!_tcscmp(keyName, _T("falloutnv")) ||
 					!_tcscmp(keyName, _T("oblivion")) ||
+					!_tcscmp(keyName, _T("Oblivion")) ||
 					!_tcscmp(keyName, _T("skyrim")) ||
 					!_tcscmp(keyName, _T("Skyrim Special Edition"));
 			}
@@ -97,6 +98,8 @@ namespace ckcmd {
 					return FONV;
 				if (!_tcscmp(keyName, _T("oblivion")))
 					return TES4;
+				if (!_tcscmp(keyName, _T("Oblivion")))
+					return TES4;
 				if (!_tcscmp(keyName, _T("skyrim")))
 					return TES5;
 				if (!_tcscmp(keyName, _T("Skyrim Special Edition")))
@@ -121,7 +124,7 @@ namespace ckcmd {
 				std::ifstream fss(path.c_str());
 				//allocate
 				fss.seekg(0, std::ios::end);
-				result.reserve(fss.tellg());
+				result.reserve(static_cast<size_t>(fss.tellg()));
 				//reset and assign
 				fss.seekg(0, std::ios::beg);
 				result.assign(std::istreambuf_iterator<char>(fss),
@@ -137,6 +140,8 @@ namespace ckcmd {
 					load(override_path, result);
 					return true;
 				}
+				if (opened_bsas.empty())
+					loadBsas(game);
 				for (auto& bsa_file : opened_bsas) {
 					if (bsa_file.find(path)) {
 						size_t size = -1;
