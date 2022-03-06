@@ -2598,9 +2598,13 @@ class RebuildVisitor : public RecursiveFieldVisitor<RebuildVisitor> {
 	set<NiObject*> objects;
 public:
 	vector<NiObjectRef> blocks;
+	vector<NiObjectRef> rootChildren;
+	NiNode* rootNode;
 
-	RebuildVisitor(NiObject* root, const NifInfo& info) :
-		RecursiveFieldVisitor(*this, info) {
+	RebuildVisitor(NiNodeRef root, const NifInfo& info) :
+		RecursiveFieldVisitor(*this, info),
+		rootNode(root)
+	{
 		root->accept(*this, info);
 
 		for (NiObject* ptr : objects) {
@@ -2613,6 +2617,33 @@ public:
 	inline void visit_object(T& obj) {
 		objects.insert(&obj);
 	}
+
+	/*
+	template<>
+	inline void visit_object(NiNode& obj)
+	{
+		auto rootChild = rootNode->GetChildren();
+		auto children = obj.GetChildren();
+		auto it = std::find_if(rootChild.begin(), rootChild.end(), [&](NiAVObjectRef& search)
+			{
+				if (search->IsSameType(NiNode::TYPE))
+				{
+					NiNodeRef t = Niflib::DynamicCast<NiNode>(search);
+					return obj == *t;
+				}
+			});
+		if (it == rootChild.end())
+		{
+			objects.insert(&obj);
+			
+			rootChild.erase(it);
+			for (auto& c : children)
+				rootChild.push_back(c);
+			rootNode->SetChildren(rootChild);
+			
+		}
+
+	}*/
 
 
 	template<class T>
@@ -5243,6 +5274,7 @@ bool FBXWrangler::LoadMeshes(const FBXImportOptions& options) {
 	//if (export_skin)
 	//	conversion_root = new NiNode();
 	//else
+	// 
 	//	conversion_root = new BSFadeNode();
 	//conversion_root->SetName(string("Scene"));
 	
@@ -5694,15 +5726,42 @@ bool FBXWrangler::SaveSkin(const string& fileName) {
 	return true;
 }
 
-bool FBXWrangler::SaveNif(const string& fileName) {
+bool FBXWrangler::SaveNif(const string& fileName, bool zm) {
 
 	NifInfo info;
 	info.userVersion = 12;
 	info.userVersion2 = 83;
 	info.version = Niflib::VER_20_2_0_7;
 
+	if (zm)
+	{
+		auto rootChild = conversion_root->GetChildren();
+		vector<NiAVObjectRef> rootTr;
+		for (auto& rc : conversion_root->GetChildren())
+		{
+			if (rc->IsSameType(NiNode::TYPE))
+			{
+				NiNodeRef nrc = Niflib::DynamicCast<NiNode>(rc);
+				for (auto& c : nrc->GetChildren())
+					rootTr.push_back(c);
+			}
+			else
+				rootTr.push_back(rc);
+		}
+		conversion_root->SetChildren(rootTr);
+	}
+
 	vector<NiObjectRef> objects = RebuildVisitor(conversion_root, info).blocks;
-	bsx_flags_t calculated_flags = calculateSkyrimBSXFlags(objects, info);
+
+	bsx_flags_t calculated_flags;
+	if (zm)
+	{
+		// Set to 130 for the eventual tileset collision
+		calculated_flags.set(1);
+		calculated_flags.set(7);
+	}
+	else
+		calculated_flags = calculateSkyrimBSXFlags(objects, info);
 
 	if (!export_skin)
 	{

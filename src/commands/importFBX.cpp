@@ -18,7 +18,7 @@ using namespace ckcmd::FBX;
 using namespace ckcmd::info;
 using namespace ckcmd::BSA;
 
-static bool BeginConversion(string importPath, string exportPath);
+static bool BeginConversion(string importPath, string exportPath, bool zm);
 static void InitializeHavok();
 static void CloseHavok();
 
@@ -42,7 +42,7 @@ string ImportFBX::GetHelp() const
     transform(name.begin(), name.end(), name.begin(), ::tolower);
 
     // Usage: ck-cmd exportfbx
-    string usage = "Usage: " + ExeCommandList::GetExeName() + " " + name + " <path_to_fbx> [-e <path_to_export>]\r\n";
+    string usage = "Usage: " + ExeCommandList::GetExeName() + " " + name + " <path_to_fbx> [-e <path_to_export> -z]\r\n";
 
 	const char help[] =
 		R"(Converts FBX format to NIF.
@@ -69,12 +69,12 @@ bool ImportFBX::InternalRunCommand(map<string, docopt::value> parsedArgs)
 	exportPath = parsedArgs["<path_to_export>"].asString();
 
 	InitializeHavok();
-	BeginConversion(importFBX, exportPath);
+	BeginConversion(importFBX, exportPath, parsedArgs["-z"].asBool());
 	CloseHavok();
 	return true;
 }
 
-bool BeginConversion(string importFBX, string exportPath) {
+bool BeginConversion(string importFBX, string exportPath, bool zm) {
 	fs::path fbxModelpath = fs::path(importFBX);
 	if (!fs::exists(fbxModelpath) || !fs::is_regular_file(fbxModelpath)) {
 		Log::Info("Invalid file: %s", fbxModelpath.c_str());
@@ -92,12 +92,14 @@ bool BeginConversion(string importFBX, string exportPath) {
 
 		fs::path out_path = outputDir / fbxModelpath.filename().replace_extension(".nif");
 		fs::create_directories(outputDir);
-		wrangler.SaveNif(out_path.string());
+		wrangler.SaveNif(out_path.string(), zm);
 	}
 	else {
 		Log::Error("Invalid FBX File: %s", fbxModelpath.string().c_str());
+		return false;
 	}
 
+	return true;
 }
 
 //Havok initialization
