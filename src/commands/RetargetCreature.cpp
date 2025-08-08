@@ -780,7 +780,6 @@ bool RetargetCreatureCmd::InternalRunCommand(map<string, docopt::value> parsedAr
 	map<string, Sk::MOVTRecord*> movts;
 	map<string, Sk::SNDRRecord*> sndrs;
 	map<FORMID, Sk::IDLERecord*> idles;
-	map<string, Sk::SOUNRecord*> souns;
 	for (auto idle_record_it = skyrimCollection.FormID_ModFile_Record.begin(); idle_record_it != skyrimCollection.FormID_ModFile_Record.end(); idle_record_it++)
 	{
 		Record* record = idle_record_it->second;
@@ -792,10 +791,10 @@ bool RetargetCreatureCmd::InternalRunCommand(map<string, docopt::value> parsedAr
 				movts[string(movt->EDID.value)] = movt;
 			}
 		}
+		// Find whether the name corresponds to SNDR (fine) or SOUN (need to find associated SNDR). The output animation/esp should only reference SNDR forms
 		if (record->GetType() == REV32(SNDR)) {
 			Sk::SNDRRecord* sndr = dynamic_cast<Sk::SNDRRecord*>(record);
-			string SDless = string(sndr->EDID.value).substr(0, string(sndr->EDID.value).size() - 2);
-			if (retarget_SOUN.find(SDless) != retarget_SOUN.end() || retarget_SOUN.find(string(sndr->EDID.value)) != retarget_SOUN.end())
+			if (retarget_SOUN.find(string(sndr->EDID.value)) != retarget_SOUN.end())
 			{
 				Log::Info("Found SNDR to retarget: %s", sndr->EDID.value);
 				sndrs[string(sndr->EDID.value)] = sndr;
@@ -807,7 +806,17 @@ bool RetargetCreatureCmd::InternalRunCommand(map<string, docopt::value> parsedAr
 			if (retarget_SOUN.find(SDless) != retarget_SOUN.end() || retarget_SOUN.find(string(soun->EDID.value)) != retarget_SOUN.end())
 			{
 				Log::Info("Found SOUN to retarget: %s", soun->EDID.value);
-				souns[string(soun->EDID.value)] = soun;
+				auto srec = skyrimCollection.FormID_ModFile_Record.find(soun->SDSC.value);
+				if (srec != skyrimCollection.FormID_ModFile_Record.end())
+				{
+					 Sk::SNDRRecord* sndr = dynamic_cast<Sk::SNDRRecord*>(srec->second);
+					 sndrs[string(soun->EDID.value)] = sndr;
+					 //souns[string(soun->EDID.value)] = string(sndr->EDID.value);
+				}
+				else
+				{
+					 Log::Info("Failed to find associated SNDR to retarget: %s", soun->EDID.value);
+				}
 			}
 		}
 		if (record->GetType() == REV32(IDLE)) {
@@ -876,6 +885,7 @@ bool RetargetCreatureCmd::InternalRunCommand(map<string, docopt::value> parsedAr
 		char* mnam_char = new char[new_MNAM.size() + 1];
 		strcpy(mnam_char, new_MNAM.c_str());
 		copied->EDID.value = char_array;
+		copied->formVersion = 43;
 		copied->MNAM.value = mnam_char;
 		copied->ESPED = movt->ESPED;
 		copied->INAM = movt->INAM;
@@ -888,18 +898,15 @@ bool RetargetCreatureCmd::InternalRunCommand(map<string, docopt::value> parsedAr
 
 	map<FORMID, FORMID> retargeted_sndr;
 
-	for (auto& sndr_it : sndrs) {
-		auto sndr = sndr_it.second;
+	for (auto& [name,sndr] : sndrs) {
 		std::string new_edid;
-		if (lower_find_all(sndr->EDID.value, old_names) != string::npos)
+		if (lower_find_all(name, old_names) != string::npos)
 		{
-			new_edid = replace_all(sndr->EDID.value, old_names, output_havok_project_name);
+			new_edid = replace_all(name, old_names, output_havok_project_name);
 		}
 		else {
-			new_edid = output_havok_project_name + sndr->EDID.value;
+			new_edid = output_havok_project_name + name;
 		}
-		//if (!ends_with(new_edid, "SD"))
-		//	new_edid += "SD";
 
 		// declaring character array 
 		char* char_array = new char[new_edid.size() + 1];
@@ -912,6 +919,7 @@ bool RetargetCreatureCmd::InternalRunCommand(map<string, docopt::value> parsedAr
 		Record* result = skyrimCollection.CopyRecord(to_copy, skyrimMod, NULL, NULL, char_array, 0);
 		Sk::SNDRRecord* copied = dynamic_cast<Sk::SNDRRecord*>(result);
 		copied->EDID.value = char_array;
+		copied->formVersion = 43;
 		copied->CNAM = sndr->CNAM;
 		copied->GNAM = sndr->GNAM;
 		copied->SNAM = sndr->SNAM;
@@ -929,42 +937,6 @@ bool RetargetCreatureCmd::InternalRunCommand(map<string, docopt::value> parsedAr
 		checker.Accept(result->formID);
 
 		retargeted_sndr[to_copy->formID] = result->formID;
-
-	}
-
-	for (auto& soun_it : souns) {
-		auto soun = soun_it.second;
-		std::string new_edid;
-		if (lower_find(soun->EDID.value, old_name) != string::npos)
-		{
-			new_edid = replace_all(soun->EDID.value, old_name, output_havok_project_name);
-		}
-		else {
-			new_edid = output_havok_project_name + soun->EDID.value;
-		}
-
-		// declaring character array 
-		char* char_array = new char[new_edid.size() + 1];
-
-		// copying the contents of the 
-		// string to char array 
-		strcpy(char_array, new_edid.c_str());
-
-		Record* to_copy = static_cast<Record*>(soun);
-		Record* result = skyrimCollection.CopyRecord(to_copy, skyrimMod, NULL, NULL, char_array, 0);
-		Sk::SOUNRecord* copied = dynamic_cast<Sk::SOUNRecord*>(result);
-		copied->EDID.value = char_array;
-		copied->OBND = soun->OBND;
-		copied->FNAM = soun->FNAM;
-		copied->SNDD = soun->SNDD;
-		copied->SDSC = soun->SDSC;
-
-		copied->SDSC.value = retargeted_sndr[copied->SDSC.value];
-
-		result->IsChanged(true);
-		result->IsLoaded(true);
-		FormIDMasterUpdater checker(skyrimMod->FormIDHandler);
-		checker.Accept(result->formID);
 
 	}
 
@@ -1001,6 +973,7 @@ bool RetargetCreatureCmd::InternalRunCommand(map<string, docopt::value> parsedAr
 		retargeted[idle->formID] = copied->formID;
 		new_records.push_back(copied);
 		copied->EDID.value = idle->EDID.value != nullptr ? char_array : nullptr;
+		copied->formVersion = 43;
 		copied->ANAM = idle->ANAM;
 		copied->CTDA = idle->CTDA;
 		copied->DATA = idle->DATA;
