@@ -2625,7 +2625,7 @@ bool FBXWrangler::ImportScene(const std::string& fileName, const FBXImportOption
 		FbxSystemUnit::m.ConvertScene(scene, lConversionOptions);
 	}
 
-	return LoadMeshes(options);
+	return LoadMeshes(fileName, options);
 }
 
 class RebuildVisitor : public RecursiveFieldVisitor<RebuildVisitor> {
@@ -5299,7 +5299,7 @@ void FBXWrangler::handleVisibility(FbxProperty& track, NiNode& parent)
 
 
 
-bool FBXWrangler::LoadMeshes(const FBXImportOptions& options) {
+bool FBXWrangler::LoadMeshes(const std::string& fileName, const FBXImportOptions& options) {
 	if (!scene)
 		return false;
 
@@ -5337,7 +5337,8 @@ bool FBXWrangler::LoadMeshes(const FBXImportOptions& options) {
 				parent = new BSFadeNode();
 
 			conversion_root = parent;
-			conversion_root->SetName(string("Scene"));
+			fs::path fullPath = fileName;
+			conversion_root->SetName(fullPath.stem().string());
 
 			if (!hasNoTransform(root)) {
 				NiNodeRef proxyNiNode = new NiNode();

@@ -126,7 +126,7 @@ namespace FBX {
 		bool ExportScene(const std::string& fileName);
 		bool ImportScene(const std::string& fileName, const FBXImportOptions& options = FBXImportOptions());
 
-		bool LoadMeshes(const FBXImportOptions& options);
+		bool LoadMeshes(const std::string& fileName, const FBXImportOptions& options);
 		bool SaveNif(const string& fileName, bool mergeNodes = false);
 		bool SaveSkin(const string& fileName);
 	};	
