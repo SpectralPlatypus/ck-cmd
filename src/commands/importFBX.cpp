@@ -3,7 +3,7 @@
 #include <core/hkfutils.h>
 #include <core/log.h>
 
-#include <commands/importFBX.h>
+#include <commands/ImportFBX.h>
 
 #include <commands/Geometry.h>
 #include <core/FBXWrangler.h>
